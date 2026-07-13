@@ -10,6 +10,7 @@ from core.models import (
     Budget,
     Category,
     Debt,
+    Goal,
     Tag,
     Transaction,
     User,
@@ -94,6 +95,13 @@ class DebtAdmin(admin.ModelAdmin):
     list_display = ("nombre", "user", "prestamista", "monto_requerido", "monto_pagado", "fecha_limite")
     list_filter = ("fecha_limite",)
     search_fields = ("nombre", "prestamista", "user__email")
+
+
+@admin.register(Goal)
+class GoalAdmin(admin.ModelAdmin):
+    list_display = ("nombre", "user", "monto_requerido", "monto_abonado", "fecha_limite")
+    list_filter = ("fecha_limite",)
+    search_fields = ("nombre", "user__email")
 
 
 @admin.register(Attachment)

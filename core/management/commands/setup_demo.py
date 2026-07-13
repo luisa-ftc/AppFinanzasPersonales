@@ -10,6 +10,7 @@ from core.models import (
     Budget,
     Category,
     Debt,
+    Goal,
     Tag,
     Transaction,
     User,
@@ -155,6 +156,27 @@ class Command(BaseCommand):
                 "monto_pagado": Decimal("800000.00"),
                 "fecha_limite": "2026-03-01",
                 "observaciones": "Ya pagada",
+            },
+        )
+
+        Goal.objects.get_or_create(
+            user=user,
+            nombre="Viaje a Japón",
+            defaults={
+                "monto_requerido": Decimal("5000000.00"),
+                "monto_abonado": Decimal("1500000.00"),
+                "fecha_limite": "2026-12-31",
+                "observaciones": "Meta de ahorro para vacaciones",
+            },
+        )
+        Goal.objects.get_or_create(
+            user=user,
+            nombre="Fondo de emergencia",
+            defaults={
+                "monto_requerido": Decimal("2000000.00"),
+                "monto_abonado": Decimal("2000000.00"),
+                "fecha_limite": "2026-06-01",
+                "observaciones": "Meta completada",
             },
         )
 

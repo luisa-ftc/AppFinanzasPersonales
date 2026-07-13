@@ -19,13 +19,24 @@ from core.api.serializers import (
     BudgetSerializer,
     CategorySerializer,
     DebtSerializer,
+    GoalSerializer,
     RegisterSerializer,
     TagSerializer,
     TransactionSerializer,
     UserSerializer,
 )
-from core.models import Account, Attachment, Budget, Category, Debt, Tag, Transaction
+from core.models import (
+    Account,
+    Attachment,
+    Budget,
+    Category,
+    Debt,
+    Goal,
+    Tag,
+    Transaction,
+)
 from core.services.debts import apply_transaction_to_debt, revert_transaction_from_debt
+from core.services.goals import apply_transaction_to_goal, revert_transaction_from_goal
 from core.services.accounts import calculate_account_balance, get_user_total_balance
 from core.services.csv_io import export_transactions_csv, import_transactions_csv
 from core.services.reports import (
@@ -112,6 +123,22 @@ class DebtViewSet(UserOwnedViewSet):
         return Response(serializer.data)
 
 
+class GoalViewSet(UserOwnedViewSet):
+    """CRUD de metas del usuario autenticado, con acción para listar
+    las transacciones asociadas a una meta."""
+
+    queryset = Goal.objects.all()
+    serializer_class = GoalSerializer
+
+    @action(detail=True, methods=["get"])
+    def transactions(self, request, pk=None):
+        """Lista las transacciones asociadas a la meta, más recientes primero."""
+        goal = self.get_object()
+        txs = goal.transactions.select_related("account", "category").order_by("-date")
+        serializer = TransactionSerializer(txs, many=True, context={"request": request})
+        return Response(serializer.data)
+
+
 class TransactionViewSet(UserOwnedViewSet):
     """CRUD de transacciones del usuario autenticado, con acciones adicionales
     de conciliación, adjuntos e import/export CSV."""
@@ -131,20 +158,26 @@ class TransactionViewSet(UserOwnedViewSet):
     ordering_fields = ["date", "amount", "created_at"]
 
     def perform_create(self, serializer):
-        """Guarda la transacción del usuario autenticado y aplica su efecto sobre la deuda asociada, si tiene."""
+        """Guarda la transacción del usuario autenticado y aplica su efecto sobre la deuda/meta asociada, si tiene."""
         tx = serializer.save(user=self.request.user)
         apply_transaction_to_debt(tx)
+        apply_transaction_to_goal(tx)
 
     def perform_update(self, serializer):
-        """Revierte el efecto de la versión anterior sobre su deuda antes de guardar y aplicar el nuevo."""
-        old = Transaction.objects.select_related("debt").get(pk=serializer.instance.pk)
+        """Revierte el efecto de la versión anterior sobre su deuda/meta antes de guardar y aplicar el nuevo."""
+        old = Transaction.objects.select_related("debt", "goal").get(
+            pk=serializer.instance.pk
+        )
         revert_transaction_from_debt(old)
+        revert_transaction_from_goal(old)
         tx = serializer.save()
         apply_transaction_to_debt(tx)
+        apply_transaction_to_goal(tx)
 
     def perform_destroy(self, instance):
-        """Revierte el efecto de la transacción sobre su deuda asociada antes de eliminarla."""
+        """Revierte el efecto de la transacción sobre su deuda/meta asociada antes de eliminarla."""
         revert_transaction_from_debt(instance)
+        revert_transaction_from_goal(instance)
         instance.delete()
 
     @action(detail=True, methods=["post"])

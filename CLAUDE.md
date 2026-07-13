@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FinTrack es una app de gestión financiera personal construida con Django 4.x + Django REST Framework. Expone el mismo modelo de dominio a través de dos interfaces paralelas: una interfaz web clásica renderizada por el servidor (vistas basadas en clases + templates de Django) y una API REST (ViewSets de DRF + JWT opcional), ambas apoyadas en una misma capa de servicios. Todo el código de la app vive en una única app de Django, `core`; `fintrack/` es solo la configuración a nivel de proyecto (settings/urls/wsgi/asgi).
 
-Módulos de negocio (mismo nivel en la nav web y en el router de la API): Dashboard, Cuentas, Categorías, Presupuestos, **Deudas**, Transacciones.
+Módulos de negocio (mismo nivel en la nav web y en el router de la API): Dashboard, Cuentas, Categorías, Presupuestos, **Deudas**, **Metas**, Transacciones.
 
 ## Comandos
 
@@ -80,9 +80,24 @@ Cuando una transacción tiene `debt` asignada:
 
 Esta lógica vive en `core/services/debts.py` (`apply_transaction_to_debt`, `revert_transaction_from_debt`, `validate_expense_against_debt`, `get_debt_transaction_history`) y se invoca **explícitamente** desde las vistas/ViewSets de Transaction (`TransactionCreateView/UpdateView/DeleteView` en `core/views.py`, `TransactionViewSet.perform_create/update/destroy` en `core/api/views.py`) envuelta en `db_transaction.atomic()` — nunca desde `Transaction.save()` ni señales, para no acoplar esa lógica al guardado genérico de transacciones (que ya tiene su propio cálculo de `content_hash`). Al editar o eliminar una transacción con deuda asociada, siempre se revierte el efecto de la versión anterior antes de aplicar el nuevo, para que los montos de la deuda no queden desincronizados.
 
+### Módulo de Metas: espejo de Deudas con la relación de signos invertida
+
+`Goal` (`core/models.py`) representa una meta de ahorro/inversión con `monto_requerido` y `monto_abonado` (`monto_pendiente` y `estado` —solo pendiente/completada— son `@property` derivadas, igual que en Deudas). El modelo se llama `Goal`, **no `Meta`**, para no chocar con la clase interna `class Meta` de Django. La `fecha_limite` es informativa: **no** genera un estado "vencida" (a diferencia de Deudas). `Transaction.goal` es un FK opcional (`on_delete=SET_NULL`).
+
+La lógica vive en `core/services/goals.py` (`apply_transaction_to_goal`, `revert_transaction_from_goal`, `validate_income_against_goal`, `validate_expense_against_goal`, `get_goal_transaction_history`) y se invoca **explícitamente** desde las vistas/ViewSets de Transaction, igual que Deudas (nunca desde señales ni `save()`). Cuando una transacción tiene `goal` asignada:
+- `income` → suma a `monto_abonado` (el usuario aporta a su meta).
+- `expense` → resta de `monto_abonado` (el usuario retira dinero de la meta).
+- `transfer` → no afecta ninguna meta.
+
+Es la relación de signos **invertida** respecto a Deudas (allí el `expense` es el que suma progreso vía `monto_pagado`). Se valida que un aporte no supere el objetivo (`validate_income_against_goal`, bloquea con el máximo abonable) y que un retiro no deje el abonado en negativo (`validate_expense_against_goal`).
+
+### Campo «Asociar a»: una transacción va a una deuda O a una meta, nunca ambas
+
+`Transaction` tiene dos FK opcionales excluyentes: `debt` y `goal` (ambos `SET_NULL`, ambos con `related_name="transactions"`). En la API se exponen como dos campos y `TransactionSerializer.validate()` impide asignar ambos a la vez (además de validar las reglas de la meta). En la web, `TransactionForm` **reemplaza** esos dos campos por un único `ChoiceField` `asociar_a` con optgroups (Deudas/Metas) y valores `debt:<pk>` / `goal:<pk>`; su `clean()` traduce la selección a `instance.debt`/`instance.goal` (el otro a `None`) y dispara la validación correspondiente. Las transferencias fuerzan ambos a `None`. Las vistas/ViewSets de Transaction invocan **ambos** pares de servicios (`..._debt` y `..._goal`) dentro del mismo `db_transaction.atomic()`; cada uno es no-op si su FK es `None`. Al editar o eliminar una transacción, se revierte el efecto anterior sobre deuda y meta antes de aplicar el nuevo.
+
 ### Gotcha: montos en `style="width:...%"` deben renderizarse sin localización
 
-Los templates que dibujan una barra de progreso (`budgets/list.html`, `debts/list.html`, `debts/detail.html`) inyectan un `Decimal` calculado (`percent_used`, `percent_paid`) directamente en un atributo `style`. Con `USE_L10N`/locale español activo, Django renderiza esos decimales con coma (`48,500%`), lo cual es un valor CSS inválido y hace que la barra se vea con un ancho incorrecto (llena o casi vacía sin relación con el porcentaje real). La corrección es envolver **solo esa interpolación** con `{% load l10n %}` + `{% localize off %}...{% endlocalize %}` para forzar el punto decimal, dejando el `{{ valor|floatformat:0 }}%` de texto visible (fuera del atributo `style`) con la localización normal. Si se agrega una nueva barra de progreso u otro valor numérico dentro de un atributo `style`/`data-*` consumido por CSS/JS, hay que aplicar el mismo `{% localize off %}` ahí.
+Los templates que dibujan una barra de progreso (`budgets/list.html`, `debts/list.html`, `debts/detail.html`, `goals/list.html`, `goals/detail.html`) inyectan un `Decimal` calculado (`percent_used`, `percent_paid`, `percent_abonado`) directamente en un atributo `style`. Con `USE_L10N`/locale español activo, Django renderiza esos decimales con coma (`48,500%`), lo cual es un valor CSS inválido y hace que la barra se vea con un ancho incorrecto (llena o casi vacía sin relación con el porcentaje real). La corrección es envolver **solo esa interpolación** con `{% load l10n %}` + `{% localize off %}...{% endlocalize %}` para forzar el punto decimal, dejando el `{{ valor|floatformat:0 }}%` de texto visible (fuera del atributo `style`) con la localización normal. Si se agrega una nueva barra de progreso u otro valor numérico dentro de un atributo `style`/`data-*` consumido por CSS/JS, hay que aplicar el mismo `{% localize off %}` ahí.
 
 ### Modelo de autenticación: email como username
 

@@ -68,6 +68,12 @@ urlpatterns = [
     path("debts/<int:pk>/", views.DebtDetailView.as_view(), name="debt_detail"),
     path("debts/<int:pk>/edit/", views.DebtUpdateView.as_view(), name="debt_update"),
     path("debts/<int:pk>/delete/", views.DebtDeleteView.as_view(), name="debt_delete"),
+    # Goals (Metas)
+    path("goals/", views.GoalListView.as_view(), name="goal_list"),
+    path("goals/new/", views.GoalCreateView.as_view(), name="goal_create"),
+    path("goals/<int:pk>/", views.GoalDetailView.as_view(), name="goal_detail"),
+    path("goals/<int:pk>/edit/", views.GoalUpdateView.as_view(), name="goal_update"),
+    path("goals/<int:pk>/delete/", views.GoalDeleteView.as_view(), name="goal_delete"),
     # Transactions
     path("transactions/", views.TransactionListView.as_view(), name="transaction_list"),
     path("transactions/new/", views.TransactionCreateView.as_view(), name="transaction_create"),

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% load l10n %}
+{% block title %}Metas · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Metas</h1>
+    <a href="{% url 'core:goal_create' %}" class="btn btn-primary">Nueva meta</a>
+</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Nombre</th>
+            <th class="text-right">Monto Objetivo</th>
+            <th class="text-right">Abonado</th>
+            <th class="text-right">Pendiente</th>
+            <th>Estado</th>
+            <th>Progreso</th>
+            <th>Fecha Limite</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for goal in goals %}
+        <tr>
+            <td><a href="{% url 'core:goal_detail' goal.pk %}">{{ goal.nombre }}</a></td>
+            <td class="text-right">${{ goal.monto_requerido_display }}</td>
+            <td class="text-right">${{ goal.monto_abonado_display }}</td>
+            <td class="text-right">${{ goal.monto_pendiente_display }}</td>
+            <td>
+                {% if goal.estado == "completada" %}
+                <span class="badge badge-success">Completada</span>
+                {% else %}
+                <span class="badge badge-warning">Pendiente</span>
+                {% endif %}
+            </td>
+            <td>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:{% localize off %}{{ goal.percent_abonado }}{% endlocalize %}%"></div>
+                </div>
+                {{ goal.percent_abonado|floatformat:0 }}%
+            </td>
+            <td>{{ goal.fecha_limite }}</td>
+            <td class="actions">
+                <a href="{% url 'core:goal_update' goal.pk %}">Editar</a>
+                <a href="{% url 'core:goal_delete' goal.pk %}" class="text-danger">Eliminar</a>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8">No hay metas registradas.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

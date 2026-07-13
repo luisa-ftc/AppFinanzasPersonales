@@ -260,6 +260,14 @@ class Transaction(models.Model):
         related_name="transactions",
         verbose_name="deuda asociada",
     )
+    goal = models.ForeignKey(
+        "Goal",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="transactions",
+        verbose_name="meta asociada",
+    )
     tags = models.ManyToManyField(Tag, blank=True, related_name="transactions")
     content_hash = models.CharField(
         "hash",
@@ -445,6 +453,73 @@ class Debt(models.Model):
             return Decimal("0")
         return min(
             (self.monto_pagado / self.monto_requerido) * 100, Decimal("100")
+        )
+
+
+class Goal(models.Model):
+    """Meta de ahorro o inversión de un usuario, con seguimiento vía transacciones."""
+
+    class GoalStatus(models.TextChoices):
+        PENDIENTE = "pendiente", "Pendiente"
+        COMPLETADA = "completada", "Completada"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="goals",
+    )
+    nombre = models.CharField("nombre", max_length=100)
+    monto_requerido = models.DecimalField(
+        "monto requerido",
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    monto_abonado = models.DecimalField(
+        "monto abonado",
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    fecha_limite = models.DateField("fecha límite")
+    observaciones = models.TextField("observaciones", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "meta"
+        verbose_name_plural = "metas"
+        ordering = ["-fecha_limite"]
+        unique_together = [["user", "nombre"]]
+
+    def __str__(self):
+        return self.nombre
+
+    @property
+    def monto_pendiente(self):
+        """Monto que aún falta abonar para alcanzar el objetivo (calculado, no persistido)."""
+        return self.monto_requerido - self.monto_abonado
+
+    @property
+    def estado(self):
+        """Estado derivado: completada si no queda pendiente, si no pendiente."""
+        if self.monto_pendiente <= 0:
+            return self.GoalStatus.COMPLETADA
+        return self.GoalStatus.PENDIENTE
+
+    @property
+    def estado_display(self):
+        """Etiqueta legible del estado derivado (para templates)."""
+        return self.GoalStatus(self.estado).label
+
+    @property
+    def percent_abonado(self):
+        """Porcentaje abonado de la meta, acotado a 100."""
+        if self.monto_requerido == 0:
+            return Decimal("0")
+        return min(
+            (self.monto_abonado / self.monto_requerido) * 100, Decimal("100")
         )
 
 
