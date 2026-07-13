@@ -64,7 +64,7 @@ class Account(models.Model):
         choices=AccountType.choices,
         default=AccountType.CHECKING,
     )
-    currency = models.CharField("moneda", max_length=3, default="COL")
+    currency = models.CharField("moneda", max_length=10, default="COP")
     initial_balance = models.DecimalField(
         "saldo inicial",
         max_digits=14,

@@ -4,8 +4,16 @@
 {% block content %}
 <div class="card form-card">
     <h1>{% if object %}Editar cuenta{% else %}Nueva cuenta{% endif %}</h1>
-    <form method="post">
+    <form method="post" novalidate>
         {% csrf_token %}
+
+        {% if form.non_field_errors %}
+        <div style="background:#fee2e2; border:1px solid #fca5a5; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1rem; color:#991b1b;">
+            {% for error in form.non_field_errors %}
+            <p style="margin:0;">{{ error }}</p>
+            {% endfor %}
+        </div>
+        {% endif %}
 
         <div class="form-field">
             {{ form.account_type.label_tag }}
@@ -66,6 +74,21 @@
         </div>
     </form>
 </div>
+
+<datalist id="currency-datalist">
+    <option value="COP">COP - Peso colombiano</option>
+    <option value="USD">USD - Dólar estadounidense</option>
+    <option value="EUR">EUR - Euro</option>
+    <option value="GBP">GBP - Libra esterlina</option>
+    <option value="MXN">MXN - Peso mexicano</option>
+    <option value="BRL">BRL - Real brasileño</option>
+    <option value="CAD">CAD - Dólar canadiense</option>
+    <option value="JPY">JPY - Yen japonés</option>
+    <option value="CHF">CHF - Franco suizo</option>
+    <option value="ARS">ARS - Peso argentino</option>
+    <option value="PEN">PEN - Sol peruano</option>
+    <option value="CLP">CLP - Peso chileno</option>
+</datalist>
 {% endblock %}
 
 {% block extra_js %}
