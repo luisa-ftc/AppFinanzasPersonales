@@ -40,7 +40,7 @@ from core.forms import (
     TransactionForm,
 )
 from core.models import Account, AccountCreditCardDetails, Attachment, Budget, Category, Transaction
-from core.services.accounts import calculate_account_balance, get_user_total_balance
+from core.services.accounts import calculate_account_balance, get_balances_by_currency, get_user_total_balance
 from core.services.credit_cards import (
     get_available_credit,
     get_next_payment_due_date,
@@ -111,9 +111,11 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         ctx = super().get_context_data(**kwargs)
         user = self.request.user
         accounts = Account.objects.filter(user=user, is_active=True)
-        total_balance = get_user_total_balance(user)
-        ctx["total_balance"] = total_balance
-        ctx["total_balance_display"] = format_money_display(total_balance)
+        balances_by_currency = get_balances_by_currency(user)
+        ctx["balances_by_currency"] = [
+            {"currency": currency, "balance_display": format_money_display(balance)}
+            for currency, balance in balances_by_currency.items()
+        ]
         ctx["accounts"] = []
         for a in accounts:
             balance = calculate_account_balance(a)

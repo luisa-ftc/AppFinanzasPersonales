@@ -15,14 +15,17 @@
 </div>
 
 <div class="stats-grid">
+    {% for b in balances_by_currency %}
     <div class="stat-card stat-primary">
-        <span class="stat-label">Balance total</span>
-        <span class="stat-value">${{ total_balance_display }}</span>
+        <span class="stat-label">Balance {{ b.currency }}</span>
+        <span class="stat-value">{{ b.balance_display }}</span>
     </div>
+    {% endfor %}
     {% for item in accounts %}
     <div class="stat-card">
         <span class="stat-label">{{ item.account.name }}</span>
-        <span class="stat-value">${{ item.balance_display }}</span>
+        <span style="font-size: 0.75rem; color: #94a3b8; margin-top: 0.1rem; display: block;">{{ item.account.get_account_type_display }} · {{ item.account.currency }}</span>
+        <span class="stat-value">{{ item.balance_display }}</span>
     </div>
     {% endfor %}
 </div>

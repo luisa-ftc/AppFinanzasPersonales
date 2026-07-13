@@ -29,6 +29,21 @@ def calculate_account_balance(account):
     return balance + income - expense - transfers_out + transfers_in
 
 
+def get_balances_by_currency(user):
+    """Agrupa los saldos calculados de todas las cuentas activas por moneda.
+
+    Devuelve un dict ordenado {currency: Decimal}. Las transferencias entre
+    cuentas de la misma moneda se cancelan correctamente; entre distintas
+    monedas aparecen como movimientos independientes en cada entrada.
+    """
+    result: dict = {}
+    for account in user.accounts.filter(is_active=True):
+        currency = account.currency or "?"
+        balance = calculate_account_balance(account)
+        result[currency] = result.get(currency, Decimal("0")) + balance
+    return dict(sorted(result.items()))
+
+
 def get_user_total_balance(user):
     """Suma los saldos calculados de todas las cuentas activas del usuario."""
     total = Decimal("0")

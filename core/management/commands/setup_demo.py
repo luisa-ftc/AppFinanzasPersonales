@@ -47,6 +47,7 @@ class Command(BaseCommand):
             name="Cuenta Principal",
             defaults={
                 "account_type": "checking",
+                "currency": "COP",
                 "initial_balance": Decimal("5000.00"),
             },
         )
@@ -55,6 +56,7 @@ class Command(BaseCommand):
             name="Ahorros",
             defaults={
                 "account_type": "savings",
+                "currency": "COP",
                 "initial_balance": Decimal("10000.00"),
             },
         )
@@ -83,6 +85,7 @@ class Command(BaseCommand):
             name="Tarjeta Visa",
             defaults={
                 "account_type": "credit",
+                "currency": "COP",
                 "initial_balance": Decimal("1500.00"),
             },
         )
