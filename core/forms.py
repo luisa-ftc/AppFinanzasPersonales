@@ -15,6 +15,7 @@ from core.models import (
     Attachment,
     Budget,
     Category,
+    Debt,
     Tag,
     Transaction,
     User,
@@ -130,6 +131,20 @@ class BudgetForm(forms.ModelForm):
         }
 
 
+class DebtForm(forms.ModelForm):
+    """Formulario CRUD de deudas."""
+
+    class Meta:
+        model = Debt
+        fields = ("nombre", "prestamista", "monto_requerido", "monto_pagado", "fecha_limite", "observaciones")
+        widgets = {
+            "monto_requerido": forms.NumberInput(attrs={"step": "0.01"}),
+            "monto_pagado": forms.NumberInput(attrs={"step": "0.01"}),
+            "fecha_limite": forms.DateInput(attrs={"type": "date"}),
+            "observaciones": forms.Textarea(attrs={"rows": 3}),
+        }
+
+
 class TransactionForm(forms.ModelForm):
     """Formulario CRUD de transacciones (ingreso, gasto o transferencia)."""
 
@@ -143,6 +158,7 @@ class TransactionForm(forms.ModelForm):
             "description",
             "date",
             "transfer_to_account",
+            "debt",
             "tags",
             "notes",
         )
@@ -154,14 +170,26 @@ class TransactionForm(forms.ModelForm):
         }
 
     def __init__(self, user, *args, **kwargs):
-        """Acota cuentas, categorías y etiquetas seleccionables a las del `user` recibido."""
+        """Acota cuentas, categorías, etiquetas y deudas seleccionables a las del `user` recibido."""
         super().__init__(*args, **kwargs)
         self.fields["account"].queryset = Account.objects.filter(user=user, is_active=True)
         self.fields["category"].queryset = Category.objects.filter(user=user, is_active=True)
         self.fields["transfer_to_account"].queryset = Account.objects.filter(
             user=user, is_active=True
         )
+        self.fields["debt"].queryset = Debt.objects.filter(user=user)
         self.fields["tags"].queryset = Tag.objects.filter(user=user)
+
+    def clean(self):
+        """Valida que un gasto asociado a una deuda no supere su saldo pendiente."""
+        cleaned = super().clean()
+        debt = cleaned.get("debt")
+        tx_type = cleaned.get("transaction_type")
+        amount = cleaned.get("amount")
+        if debt and tx_type == "expense" and amount:
+            from core.services.debts import validate_expense_against_debt
+
+            validate_expense_against_debt(debt, amount)
 
 
 class TransactionFilterForm(forms.Form):

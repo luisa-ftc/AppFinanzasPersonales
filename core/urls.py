@@ -62,6 +62,12 @@ urlpatterns = [
     path("budgets/new/", views.BudgetCreateView.as_view(), name="budget_create"),
     path("budgets/<int:pk>/edit/", views.BudgetUpdateView.as_view(), name="budget_update"),
     path("budgets/<int:pk>/delete/", views.BudgetDeleteView.as_view(), name="budget_delete"),
+    # Debts
+    path("debts/", views.DebtListView.as_view(), name="debt_list"),
+    path("debts/new/", views.DebtCreateView.as_view(), name="debt_create"),
+    path("debts/<int:pk>/", views.DebtDetailView.as_view(), name="debt_detail"),
+    path("debts/<int:pk>/edit/", views.DebtUpdateView.as_view(), name="debt_update"),
+    path("debts/<int:pk>/delete/", views.DebtDeleteView.as_view(), name="debt_delete"),
     # Transactions
     path("transactions/", views.TransactionListView.as_view(), name="transaction_list"),
     path("transactions/new/", views.TransactionCreateView.as_view(), name="transaction_create"),

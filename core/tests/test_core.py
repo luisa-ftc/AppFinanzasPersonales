@@ -19,7 +19,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from core.admin import UserAdmin
-from core.models import Account, AccountCreditCardDetails, Budget, Category, Transaction
+from core.models import Account, AccountCreditCardDetails, Budget, Category, Debt, Transaction
 from core.services.accounts import calculate_account_balance
 from core.services.budgets import calculate_budget_spent
 from core.services.credit_cards import (
@@ -29,6 +29,7 @@ from core.services.credit_cards import (
     get_used_credit,
 )
 from core.services.csv_io import import_transactions_csv
+from core.services.debts import apply_transaction_to_debt, revert_transaction_from_debt, validate_expense_against_debt
 from core.services.reports import get_monthly_income_expense
 
 User = get_user_model()
@@ -528,4 +529,204 @@ class TestAuthViews:
     def test_login_redirects_authenticated(self, client, user):
         client.login(username="test@example.com", password="testpass123")
         response = client.get(reverse("core:dashboard"))
+        assert response.status_code == 200
+
+
+# ── Debt tests ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def debt(user):
+    return Debt.objects.create(
+        user=user,
+        nombre="Test Debt",
+        prestamista="Test Lender",
+        monto_requerido=Decimal("1000.00"),
+        fecha_limite=date(2026, 12, 31),
+    )
+
+
+@pytest.mark.django_db
+class TestDebtModel:
+    def test_monto_pendiente(self, debt):
+        assert debt.monto_pendiente == Decimal("1000.00")
+
+    def test_estado_pendiente(self, debt):
+        assert debt.estado == "pendiente"
+
+    def test_estado_pagada(self, user):
+        d = Debt.objects.create(
+            user=user,
+            nombre="Paid",
+            prestamista="X",
+            monto_requerido=Decimal("500.00"),
+            monto_pagado=Decimal("500.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        assert d.estado == "pagada"
+
+    def test_estado_vencida(self, user):
+        d = Debt.objects.create(
+            user=user,
+            nombre="Overdue",
+            prestamista="X",
+            monto_requerido=Decimal("500.00"),
+            fecha_limite=date(2020, 1, 1),
+        )
+        assert d.estado == "vencida"
+
+    def test_percent_paid(self, user):
+        d = Debt.objects.create(
+            user=user,
+            nombre="Half",
+            prestamista="X",
+            monto_requerido=Decimal("200.00"),
+            monto_pagado=Decimal("100.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        assert d.percent_paid == Decimal("50")
+
+
+@pytest.mark.django_db
+class TestDebtTransactionIntegration:
+    def test_expense_increases_monto_pagado(self, user, account, debt):
+        tx = Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="expense",
+            amount=Decimal("200.00"),
+            description="Abono",
+            date="2026-06-01",
+            debt=debt,
+        )
+        apply_transaction_to_debt(tx)
+        debt.refresh_from_db()
+        assert debt.monto_pagado == Decimal("200.00")
+
+    def test_income_increases_monto_requerido(self, user, account, debt):
+        tx = Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="income",
+            amount=Decimal("300.00"),
+            description="Préstamo adicional",
+            date="2026-06-01",
+            debt=debt,
+        )
+        apply_transaction_to_debt(tx)
+        debt.refresh_from_db()
+        assert debt.monto_requerido == Decimal("1300.00")
+
+    def test_expense_cannot_exceed_pendiente(self, debt):
+        with pytest.raises(Exception):
+            validate_expense_against_debt(debt, Decimal("1500.00"))
+
+    def test_revert_expense(self, user, account, debt):
+        tx = Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="expense",
+            amount=Decimal("200.00"),
+            description="Abono",
+            date="2026-06-01",
+            debt=debt,
+        )
+        apply_transaction_to_debt(tx)
+        revert_transaction_from_debt(tx)
+        debt.refresh_from_db()
+        assert debt.monto_pagado == Decimal("0.00")
+
+    def test_no_op_without_debt(self, user, account):
+        tx = Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="expense",
+            amount=Decimal("100.00"),
+            description="Normal",
+            date="2026-06-01",
+        )
+        apply_transaction_to_debt(tx)
+
+
+@pytest.mark.django_db
+class TestDebtAPI:
+    def test_create_debt(self, api_client):
+        response = api_client.post(
+            reverse("debt-list"),
+            {
+                "nombre": "API Debt",
+                "prestamista": "Bank",
+                "monto_requerido": "500.00",
+                "fecha_limite": "2026-12-31",
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["monto_pendiente"] == "500.00"
+
+    def test_list_debts_scoped(self, api_client, user):
+        Debt.objects.create(
+            user=user,
+            nombre="Mine",
+            prestamista="X",
+            monto_requerido=Decimal("100.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        other = User.objects.create_user(
+            email="other@example.com", username="other", password="pass"
+        )
+        Debt.objects.create(
+            user=other,
+            nombre="Theirs",
+            prestamista="Y",
+            monto_requerido=Decimal("200.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        response = api_client.get(reverse("debt-list"))
+        results = response.data.get("results", response.data)
+        assert len(results) == 1
+        assert results[0]["nombre"] == "Mine"
+
+    def test_computed_fields(self, api_client, user):
+        Debt.objects.create(
+            user=user,
+            nombre="Comp",
+            prestamista="X",
+            monto_requerido=Decimal("1000.00"),
+            monto_pagado=Decimal("400.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        response = api_client.get(reverse("debt-list"))
+        results = response.data.get("results", response.data)
+        d = results[0]
+        assert d["monto_pendiente"] == "600.00"
+        assert d["estado"] == "pendiente"
+        assert Decimal(d["percent_paid"]) == Decimal("40")
+
+
+@pytest.mark.django_db
+class TestDebtWebViews:
+    def test_debt_list(self, client, user):
+        client.force_login(user)
+        response = client.get(reverse("core:debt_list"))
+        assert response.status_code == 200
+
+    def test_create_debt_web(self, client, user):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:debt_create"),
+            {
+                "nombre": "Web Debt",
+                "prestamista": "Web Lender",
+                "monto_requerido": "1000.00",
+                "monto_pagado": "0.00",
+                "fecha_limite": "2026-12-31",
+            },
+        )
+        assert response.status_code == 302
+        assert Debt.objects.filter(user=user, nombre="Web Debt").exists()
+
+    def test_debt_detail(self, client, user, debt):
+        client.force_login(user)
+        response = client.get(reverse("core:debt_detail", kwargs={"pk": debt.pk}))
         assert response.status_code == 200

@@ -16,6 +16,7 @@ from core.models import (
     Attachment,
     Budget,
     Category,
+    Debt,
     Tag,
     Transaction,
 )
@@ -242,6 +243,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             "is_reconciled",
             "reconciled_at",
             "transfer_to_account",
+            "debt",
             "tags",
             "content_hash",
             "notes",
@@ -265,6 +267,7 @@ class TransactionSerializer(serializers.ModelSerializer):
         self.fields["account"].queryset = Account.objects.filter(user=user)
         self.fields["category"].queryset = Category.objects.filter(user=user)
         self.fields["transfer_to_account"].queryset = Account.objects.filter(user=user)
+        self.fields["debt"].queryset = Debt.objects.filter(user=user)
         self.fields["tags"].queryset = Tag.objects.filter(user=user)
 
     def create(self, validated_data):
@@ -315,6 +318,43 @@ class BudgetSerializer(serializers.ModelSerializer):
         data["remaining"] = str(instance.remaining)
         data["percent_used"] = str(instance.percent_used)
         return data
+
+
+class DebtSerializer(serializers.ModelSerializer):
+    monto_pendiente = serializers.SerializerMethodField()
+    estado = serializers.SerializerMethodField()
+    percent_paid = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Debt
+        fields = (
+            "id",
+            "nombre",
+            "prestamista",
+            "monto_requerido",
+            "monto_pagado",
+            "fecha_limite",
+            "observaciones",
+            "monto_pendiente",
+            "estado",
+            "percent_paid",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at", "monto_pendiente", "estado", "percent_paid")
+
+    def get_monto_pendiente(self, obj):
+        return str(obj.monto_pendiente)
+
+    def get_estado(self, obj):
+        return str(obj.estado)
+
+    def get_percent_paid(self, obj):
+        return str(obj.percent_paid)
+
+    def create(self, validated_data):
+        validated_data["user"] = self.context["request"].user
+        return super().create(validated_data)
 
 
 class DashboardSerializer(serializers.Serializer):

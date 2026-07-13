@@ -15,6 +15,7 @@ router.register("accounts", views.AccountViewSet, basename="account")
 router.register("categories", views.CategoryViewSet, basename="category")
 router.register("tags", views.TagViewSet, basename="tag")
 router.register("budgets", views.BudgetViewSet, basename="budget")
+router.register("debts", views.DebtViewSet, basename="debt")
 router.register("transactions", views.TransactionViewSet, basename="transaction")
 
 urlpatterns = [

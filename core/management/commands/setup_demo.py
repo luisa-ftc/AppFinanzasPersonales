@@ -9,6 +9,7 @@ from core.models import (
     AccountCreditCardDetails,
     Budget,
     Category,
+    Debt,
     Tag,
     Transaction,
     User,
@@ -133,5 +134,28 @@ class Command(BaseCommand):
                 if tx_type == "transfer":
                     tx.transfer_to_account = savings
                 tx.save()
+
+        Debt.objects.get_or_create(
+            user=user,
+            nombre="Préstamo personal",
+            defaults={
+                "prestamista": "Banco Nacional",
+                "monto_requerido": Decimal("5000000.00"),
+                "monto_pagado": Decimal("1500000.00"),
+                "fecha_limite": "2026-12-31",
+                "observaciones": "Préstamo a 12 meses",
+            },
+        )
+        Debt.objects.get_or_create(
+            user=user,
+            nombre="Deuda familiar",
+            defaults={
+                "prestamista": "Mamá",
+                "monto_requerido": Decimal("800000.00"),
+                "monto_pagado": Decimal("800000.00"),
+                "fecha_limite": "2026-03-01",
+                "observaciones": "Ya pagada",
+            },
+        )
 
         self.stdout.write(self.style.SUCCESS("Datos de demostración cargados correctamente."))

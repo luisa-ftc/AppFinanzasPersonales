@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% load l10n %}
+{% block title %}{{ debt.nombre }} · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ debt.nombre }}</h1>
+    <div>
+        <a href="{% url 'core:debt_update' debt.pk %}" class="btn btn-primary">Editar</a>
+        <a href="{% url 'core:debt_list' %}" class="btn">Volver</a>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+    <table class="table">
+        <tr>
+            <th>Prestamista</th>
+            <td>{{ debt.prestamista }}</td>
+        </tr>
+        <tr>
+            <th>Monto requerido</th>
+            <td>${{ debt.monto_requerido_display }}</td>
+        </tr>
+        <tr>
+            <th>Monto pagado</th>
+            <td>${{ debt.monto_pagado_display }}</td>
+        </tr>
+        <tr>
+            <th>Monto pendiente</th>
+            <td>${{ debt.monto_pendiente_display }}</td>
+        </tr>
+        <tr>
+            <th>Estado</th>
+            <td>
+                {% if debt.estado == "pagada" %}
+                <span class="badge badge-success">Pagada</span>
+                {% elif debt.estado == "vencida" %}
+                <span class="badge badge-danger">Vencida</span>
+                {% else %}
+                <span class="badge badge-warning">Pendiente</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Progreso</th>
+            <td>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:{% localize off %}{{ debt.percent_paid }}{% endlocalize %}%"></div>
+                </div>
+                {{ debt.percent_paid|floatformat:0 }}%
+            </td>
+        </tr>
+        <tr>
+            <th>Fecha limite</th>
+            <td>{{ debt.fecha_limite }}</td>
+        </tr>
+        {% if debt.observaciones %}
+        <tr>
+            <th>Observaciones</th>
+            <td>{{ debt.observaciones }}</td>
+        </tr>
+        {% endif %}
+    </table>
+</div>
+
+<h2>Historial de transacciones asociadas</h2>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Fecha</th>
+            <th>Tipo</th>
+            <th>Descripcion</th>
+            <th>Cuenta</th>
+            <th class="text-right">Monto</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for tx in transactions %}
+        <tr>
+            <td>{{ tx.date }}</td>
+            <td>
+                {% if tx.transaction_type == "income" %}
+                <span class="badge badge-success">Ingreso</span>
+                {% elif tx.transaction_type == "expense" %}
+                <span class="badge badge-danger">Gasto</span>
+                {% else %}
+                <span class="badge">{{ tx.get_transaction_type_display }}</span>
+                {% endif %}
+            </td>
+            <td>{{ tx.description }}</td>
+            <td>{{ tx.account.name }}</td>
+            <td class="text-right">${{ tx.amount_display }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">No hay transacciones asociadas a esta deuda.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
