@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Registrar pago · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>Registrar pago</h1>
+    <p class="help-text">Gasto: <strong>{{ shared_expense.name }}</strong></p>
+    <form method="post" novalidate>
+        {% csrf_token %}
+
+        {% if form.non_field_errors %}
+        <div style="background:#fee2e2; border:1px solid #fca5a5; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1rem; color:#991b1b;">
+            {% for error in form.non_field_errors %}
+            <p style="margin:0;">{{ error }}</p>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="form-field">
+            {{ form.participant.label_tag }}
+            {{ form.participant }}
+            {{ form.participant.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.amount.label_tag }}
+            {{ form.amount }}
+            {{ form.amount.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.date.label_tag }}
+            {{ form.date }}
+            {{ form.date.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.account.label_tag }}
+            {{ form.account }}
+            {{ form.account.errors }}
+            <p class="help-text">
+                Obligatoria solo si tú pagas tu parte o si tú recibes este pago.
+                Se generará una transacción real (gasto o ingreso, según corresponda)
+                en esa cuenta. Si el pago es entre otras dos personas, puedes dejarla en blanco.
+            </p>
+        </div>
+
+        <div class="form-field">
+            {{ form.notes.label_tag }}
+            {{ form.notes }}
+            {{ form.notes.errors }}
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Guardar</button>
+            <a href="{% url 'core:shared_expense_detail' shared_expense.pk %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% load l10n %}
+{% block title %}Gastos Compartidos · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Gastos Compartidos</h1>
+    <a href="{% url 'core:shared_expense_create' %}" class="btn btn-primary">Nuevo gasto</a>
+</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Nombre</th>
+            <th>Fecha</th>
+            <th>Pagó</th>
+            <th class="text-right">Participantes</th>
+            <th class="text-right">Total</th>
+            <th class="text-right">Recuperado</th>
+            <th class="text-right">Pendiente</th>
+            <th>Progreso</th>
+            <th>Estado</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for se in shared_expenses %}
+        <tr>
+            <td><a href="{% url 'core:shared_expense_detail' se.pk %}">{{ se.name }}</a></td>
+            <td>{{ se.date }}</td>
+            <td>{{ se.payer_participant.display_name }}</td>
+            <td class="text-right">{{ se.participant_count }}</td>
+            <td class="text-right">${{ se.total_amount_display }}</td>
+            <td class="text-right">${{ se.amount_recovered_display }}</td>
+            <td class="text-right">${{ se.amount_pending_display }}</td>
+            <td>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:{% localize off %}{{ se.percent_recovered }}{% endlocalize %}%"></div>
+                </div>
+                {{ se.percent_recovered|floatformat:0 }}%
+            </td>
+            <td>
+                {% if se.estado == "completado" %}
+                <span class="badge badge-success">Completado</span>
+                {% elif se.estado == "parcial" %}
+                <span class="badge badge-warning">Parcial</span>
+                {% else %}
+                <span class="badge">Pendiente</span>
+                {% endif %}
+            </td>
+            <td class="actions">
+                <a href="{% url 'core:shared_expense_detail' se.pk %}">Ver</a>
+                <a href="{% url 'core:shared_expense_delete' se.pk %}" class="text-danger">Eliminar</a>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="10">No hay gastos compartidos registrados.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

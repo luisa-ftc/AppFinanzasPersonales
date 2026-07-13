@@ -8,6 +8,7 @@ asociar datos de otros usuarios.
 """
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from rest_framework import serializers
 
 from core.models import (
@@ -20,6 +21,9 @@ from core.models import (
     ContactGroup,
     Debt,
     Goal,
+    SharedExpense,
+    SharedExpenseParticipant,
+    SharedExpensePayment,
     Tag,
     Transaction,
 )
@@ -33,6 +37,12 @@ from core.services.credit_cards import (
 from core.services.goals import (
     validate_expense_against_goal,
     validate_income_against_goal,
+)
+from core.services.shared_expenses import (
+    build_participant_specs,
+    resolve_participants,
+    validate_payer_is_participant,
+    validate_payment_against_participant,
 )
 
 User = get_user_model()
@@ -289,7 +299,17 @@ class TransactionSerializer(serializers.ModelSerializer):
 
         La lógica de deudas se mantiene igual que antes (validación solo en la
         capa web); aquí solo se añade la exclusión mutua y las reglas de metas.
-        """
+
+        También bloquea editar una transacción que pertenece a un gasto
+        compartido (ver `TransactionForm.clean` para el porqué)."""
+        if self.instance is not None and (
+            hasattr(self.instance, "shared_expense")
+            or hasattr(self.instance, "shared_expense_payment")
+        ):
+            raise serializers.ValidationError(
+                "Esta transacción pertenece a un gasto compartido; "
+                "elimínalo y créalo de nuevo para modificarlo."
+            )
         debt = attrs.get("debt", getattr(self.instance, "debt", None))
         goal = attrs.get("goal", getattr(self.instance, "goal", None))
         if debt and goal:
@@ -533,6 +553,238 @@ class ContactGroupSerializer(serializers.ModelSerializer):
         if members is not None:
             instance.members.set(members)
         return instance
+
+
+class SharedExpenseParticipantSerializer(serializers.ModelSerializer):
+    """Serializer de solo lectura de un participante de un gasto compartido."""
+
+    display_name = serializers.CharField(read_only=True)
+    amount_pending = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    status = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = SharedExpenseParticipant
+        fields = (
+            "id",
+            "contact",
+            "display_name",
+            "is_owner",
+            "is_payer",
+            "amount_assigned",
+            "amount_paid",
+            "amount_pending",
+            "status",
+        )
+        read_only_fields = fields
+
+
+class SharedExpensePaymentSerializer(serializers.ModelSerializer):
+    """Serializer para registrar un pago de un participante de un gasto compartido.
+
+    `participant` se acota, en `__init__`, a los participantes del gasto
+    compartido recibido en `context["shared_expense"]` (patrón análogo a
+    `SharedExpensePaymentForm`). `account` solo es obligatoria cuando el
+    dueño participa directamente en ese pago concreto (saldando su propia
+    parte o recibiendo el pago de otro) — ver
+    `core.services.shared_expenses.get_shared_expense_payment_transaction_type`,
+    evaluado en `validate()` según el `participant` recibido, no en
+    `__init__`, porque depende de quién se elija."""
+
+    class Meta:
+        model = SharedExpensePayment
+        fields = (
+            "id", "participant", "amount", "date", "account", "notes", "created_at",
+        )
+        read_only_fields = ("id", "created_at")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["account"].required = False
+        shared_expense = self.context.get("shared_expense")
+        if shared_expense is not None:
+            self.fields["participant"].queryset = shared_expense.participants.all()
+            self.fields["account"].queryset = Account.objects.filter(
+                user=shared_expense.user, is_active=True
+            )
+
+    def validate(self, attrs):
+        from core.models import Transaction as TransactionModel
+        from core.services.shared_expenses import (
+            get_shared_expense_payment_transaction_type,
+        )
+
+        validate_payment_against_participant(attrs["participant"], attrs["amount"])
+        shared_expense = self.context.get("shared_expense")
+        payer = shared_expense.payer_participant if shared_expense else None
+        tx_type = get_shared_expense_payment_transaction_type(
+            attrs["participant"], payer
+        )
+        if tx_type is not None and not attrs.get("account"):
+            if tx_type == TransactionModel.TransactionType.EXPENSE:
+                raise serializers.ValidationError(
+                    {"account": ["Selecciona la cuenta desde la que pagaste tu parte."]}
+                )
+            raise serializers.ValidationError(
+                {"account": ["Selecciona la cuenta donde recibiste el pago."]}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        from core.services.shared_expenses import register_shared_expense_payment
+
+        return register_shared_expense_payment(
+            participant=validated_data["participant"],
+            amount=validated_data["amount"],
+            date=validated_data["date"],
+            notes=validated_data.get("notes", ""),
+            account=validated_data.get("account"),
+        )
+
+
+class SharedExpenseSerializer(serializers.ModelSerializer):
+    """Serializer de gastos compartidos.
+
+    Mezcla campos de solo-escritura sin equivalente directo en el modelo
+    (`account`, `category`, `date`, `total_amount`, `contacts`, `groups`,
+    `include_owner`, `payer` — igual que en `SharedExpenseForm`, porque
+    `SharedExpense` expone esos datos como `@property` sobre su
+    `Transaction`) con campos calculados de solo lectura. Sin `update()`:
+    el módulo no soporta edición en esta versión.
+    """
+
+    account = serializers.PrimaryKeyRelatedField(
+        queryset=Account.objects.none(), write_only=True, required=False
+    )
+    category = serializers.PrimaryKeyRelatedField(queryset=Category.objects.none(), write_only=True)
+    date = serializers.DateField(write_only=True)
+    total_amount = serializers.DecimalField(max_digits=14, decimal_places=2, write_only=True)
+    contacts = serializers.PrimaryKeyRelatedField(
+        queryset=Contact.objects.none(), many=True, required=False, write_only=True
+    )
+    groups = serializers.PrimaryKeyRelatedField(
+        queryset=ContactGroup.objects.none(), many=True, required=False, write_only=True
+    )
+    include_owner = serializers.BooleanField(required=False, default=True, write_only=True)
+    payer = serializers.CharField(write_only=True)
+
+    account_detail = serializers.SerializerMethodField()
+    category_detail = serializers.SerializerMethodField()
+    amount_recovered = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    amount_pending = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    percent_recovered = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
+    estado = serializers.CharField(read_only=True)
+    participant_count = serializers.IntegerField(read_only=True)
+    payment_count = serializers.IntegerField(read_only=True)
+    participants = SharedExpenseParticipantSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = SharedExpense
+        fields = (
+            "id",
+            "name",
+            "description",
+            "split_method",
+            "account",
+            "category",
+            "date",
+            "total_amount",
+            "contacts",
+            "groups",
+            "include_owner",
+            "payer",
+            "account_detail",
+            "category_detail",
+            "amount_recovered",
+            "amount_pending",
+            "percent_recovered",
+            "estado",
+            "participant_count",
+            "payment_count",
+            "participants",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        user = self.context["request"].user
+        self.fields["account"].queryset = Account.objects.filter(user=user, is_active=True)
+        self.fields["category"].queryset = Category.objects.filter(
+            user=user, is_active=True, category_type=Category.CategoryType.EXPENSE
+        )
+        self.fields["contacts"].child_relation.queryset = Contact.objects.filter(user=user)
+        self.fields["groups"].child_relation.queryset = ContactGroup.objects.filter(user=user)
+
+    def get_account_detail(self, obj):
+        if obj.account is None:
+            return None
+        return {"id": obj.account.pk, "name": obj.account.name}
+
+    def get_category_detail(self, obj):
+        if obj.category is None:
+            return None
+        return {"id": obj.category.pk, "name": obj.category.name}
+
+    def _resolve_payer_spec(self, raw_payer, specs, user):
+        from core.services.shared_expenses import ParticipantSpec
+
+        if raw_payer == "owner":
+            return ParticipantSpec(True, None)
+        kind, _, pk = (raw_payer or "").partition(":")
+        if kind != "contact" or not pk:
+            return None
+        contact = Contact.objects.filter(user=user, pk=pk).first()
+        if contact is None:
+            return None
+        return ParticipantSpec(False, contact)
+
+    def validate(self, attrs):
+        user = self.context["request"].user
+        contacts = attrs.get("contacts", [])
+        groups = attrs.get("groups", [])
+        include_owner = attrs.get("include_owner", True)
+
+        resolved = resolve_participants(
+            user, contact_ids=[c.pk for c in contacts], group_ids=[g.pk for g in groups]
+        )
+        specs = build_participant_specs(include_owner, resolved)
+        if not specs:
+            raise serializers.ValidationError(
+                {"non_field_errors": ["Debes seleccionar al menos un participante."]}
+            )
+        payer_spec = self._resolve_payer_spec(attrs.get("payer"), specs, user)
+        if payer_spec is None:
+            raise serializers.ValidationError({"payer": ["El pagador seleccionado no es válido."]})
+        try:
+            validate_payer_is_participant(payer_spec, specs)
+        except ValidationError as exc:
+            raise serializers.ValidationError({"payer": [exc.messages[0]]})
+
+        if payer_spec.is_owner and not attrs.get("account"):
+            raise serializers.ValidationError(
+                {"account": ["Selecciona la cuenta de origen: tú pagaste este gasto."]}
+            )
+
+        attrs["_participant_specs"] = specs
+        attrs["_payer_spec"] = payer_spec
+        return attrs
+
+    def create(self, validated_data):
+        from core.services.shared_expenses import create_shared_expense
+
+        return create_shared_expense(
+            user=self.context["request"].user,
+            name=validated_data["name"],
+            description=validated_data.get("description", ""),
+            account=validated_data.get("account"),
+            category=validated_data["category"],
+            date=validated_data["date"],
+            total_amount=validated_data["total_amount"],
+            participant_specs=validated_data["_participant_specs"],
+            payer_spec=validated_data["_payer_spec"],
+            split_method=validated_data.get("split_method", SharedExpense.SplitMethod.EQUAL),
+        )
 
 
 class DashboardSerializer(serializers.Serializer):

@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Nuevo gasto compartido · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>Nuevo gasto compartido</h1>
+    <form method="post" novalidate>
+        {% csrf_token %}
+
+        {% if form.non_field_errors %}
+        <div style="background:#fee2e2; border:1px solid #fca5a5; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1rem; color:#991b1b;">
+            {% for error in form.non_field_errors %}
+            <p style="margin:0;">{{ error }}</p>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="form-field">
+            {{ form.name.label_tag }}
+            {{ form.name }}
+            {{ form.name.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.description.label_tag }}
+            {{ form.description }}
+            {{ form.description.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.category.label_tag }}
+            {{ form.category }}
+            {{ form.category.errors }}
+        </div>
+
+        <div class="form-field" id="account-field">
+            {{ form.account.label_tag }}
+            {{ form.account }}
+            {{ form.account.errors }}
+            <p class="help-text">{{ form.account.help_text }}</p>
+        </div>
+
+        <div class="form-field">
+            {{ form.date.label_tag }}
+            {{ form.date }}
+            {{ form.date.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.total_amount.label_tag }}
+            {{ form.total_amount }}
+            {{ form.total_amount.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.split_method.label_tag }}
+            {{ form.split_method }}
+            {{ form.split_method.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.include_owner }}
+            {{ form.include_owner.label_tag }}
+            {{ form.include_owner.errors }}
+            <p class="help-text">{{ form.include_owner.help_text }}</p>
+        </div>
+
+        <div class="form-field">
+            {{ form.contacts.label_tag }}
+            {{ form.contacts }}
+            {{ form.contacts.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.groups.label_tag }}
+            {{ form.groups }}
+            {{ form.groups.errors }}
+            <p class="help-text">{{ form.groups.help_text }}</p>
+        </div>
+
+        <div class="form-field">
+            {{ form.payer.label_tag }}
+            {{ form.payer }}
+            {{ form.payer.errors }}
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Guardar</button>
+            <a href="{% url 'core:shared_expense_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const payerSelect = document.getElementById('id_payer');
+    const accountField = document.getElementById('account-field');
+
+    if (!payerSelect || !accountField) {
+        return;
+    }
+
+    function applyVisibility() {
+        if (payerSelect.value === 'owner') {
+            accountField.classList.remove('hidden');
+        } else {
+            accountField.classList.add('hidden');
+        }
+    }
+
+    payerSelect.addEventListener('change', applyVisibility);
+    applyVisibility();
+})();
+</script>
+{% endblock %}

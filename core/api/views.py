@@ -24,6 +24,8 @@ from core.api.serializers import (
     DebtSerializer,
     GoalSerializer,
     RegisterSerializer,
+    SharedExpensePaymentSerializer,
+    SharedExpenseSerializer,
     TagSerializer,
     TransactionSerializer,
     UserSerializer,
@@ -37,12 +39,18 @@ from core.models import (
     ContactGroup,
     Debt,
     Goal,
+    SharedExpense,
+    SharedExpensePayment,
     Tag,
     Transaction,
 )
 from core.services.contacts import add_contact, remove_contact, search_users
 from core.services.debts import apply_transaction_to_debt, revert_transaction_from_debt
 from core.services.goals import apply_transaction_to_goal, revert_transaction_from_goal
+from core.services.shared_expenses import (
+    delete_shared_expense,
+    revert_shared_expense_payment_transaction,
+)
 from core.services.accounts import calculate_account_balance, get_user_total_balance
 from core.services.csv_io import export_transactions_csv, import_transactions_csv
 from core.services.reports import (
@@ -202,6 +210,49 @@ class ContactGroupViewSet(UserOwnedViewSet):
     serializer_class = ContactGroupSerializer
 
 
+class SharedExpenseViewSet(UserOwnedViewSet):
+    """CRUD (sin edición) de gastos compartidos del usuario autenticado.
+
+    `http_method_names` excluye put/patch: este módulo no soporta edición en
+    v1 (si algo está mal, se elimina y se recrea). `perform_destroy` delega
+    en el servicio para que borrar el gasto borre también su Transacción
+    asociada (cascada limpia el resto)."""
+
+    queryset = SharedExpense.objects.select_related(
+        "transaction__account", "transaction__category"
+    ).prefetch_related("participants__contact__contact", "participants__payments")
+    serializer_class = SharedExpenseSerializer
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def perform_destroy(self, instance):
+        delete_shared_expense(instance)
+
+    @action(detail=True, methods=["post"], url_path="register-payment")
+    def register_payment(self, request, pk=None):
+        """Registra un pago recibido de uno de los participantes del gasto."""
+        shared_expense = self.get_object()
+        serializer = SharedExpensePaymentSerializer(
+            data=request.data, context={"shared_expense": shared_expense}
+        )
+        serializer.is_valid(raise_exception=True)
+        payment = serializer.save()
+        return Response(
+            SharedExpensePaymentSerializer(payment).data, status=status.HTTP_201_CREATED
+        )
+
+    @action(detail=True, methods=["get"])
+    def payments(self, request, pk=None):
+        """Lista el historial de pagos del gasto, más recientes primero."""
+        shared_expense = self.get_object()
+        payments = (
+            SharedExpensePayment.objects.filter(participant__shared_expense=shared_expense)
+            .select_related("participant")
+            .order_by("-date", "-created_at")
+        )
+        serializer = SharedExpensePaymentSerializer(payments, many=True)
+        return Response(serializer.data)
+
+
 class TransactionViewSet(UserOwnedViewSet):
     """CRUD de transacciones del usuario autenticado, con acciones adicionales
     de conciliación, adjuntos e import/export CSV."""
@@ -238,9 +289,11 @@ class TransactionViewSet(UserOwnedViewSet):
         apply_transaction_to_goal(tx)
 
     def perform_destroy(self, instance):
-        """Revierte el efecto de la transacción sobre su deuda/meta asociada antes de eliminarla."""
+        """Revierte el efecto de la transacción sobre su deuda/meta/pago de gasto
+        compartido asociado antes de eliminarla."""
         revert_transaction_from_debt(instance)
         revert_transaction_from_goal(instance)
+        revert_shared_expense_payment_transaction(instance)
         instance.delete()
 
     @action(detail=True, methods=["post"])

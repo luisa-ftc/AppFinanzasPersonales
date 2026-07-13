@@ -44,6 +44,8 @@ from core.forms import (
     GoalForm,
     LoginForm,
     RegisterForm,
+    SharedExpenseForm,
+    SharedExpensePaymentForm,
     TransactionFilterForm,
     TransactionForm,
 )
@@ -57,6 +59,8 @@ from core.models import (
     ContactGroup,
     Debt,
     Goal,
+    SharedExpense,
+    SharedExpenseParticipant,
     Transaction,
 )
 from core.services.contacts import add_contact, remove_contact, search_users
@@ -69,6 +73,12 @@ from core.services.goals import (
     apply_transaction_to_goal,
     get_goal_transaction_history,
     revert_transaction_from_goal,
+)
+from core.services.shared_expenses import (
+    create_shared_expense,
+    delete_shared_expense,
+    register_shared_expense_payment,
+    revert_shared_expense_payment_transaction,
 )
 from core.services.accounts import calculate_account_balance, get_balances_by_currency, get_user_total_balance
 from core.services.credit_cards import (
@@ -190,6 +200,45 @@ class DashboardView(LoginRequiredMixin, TemplateView):
             if active_goals
             else 0
         )
+
+        all_shared_expenses = list(
+            SharedExpense.objects.filter(user=user).prefetch_related("participants")
+        )
+        ctx["active_shared_expense_count"] = sum(
+            1 for se in all_shared_expenses
+            if se.estado != SharedExpense.SharedExpenseStatus.COMPLETADO
+        )
+        # "Pendiente por recuperar" solo cuenta gastos donde el dueño pagó
+        # (is_owner=True, is_payer=True): si pagó un contacto, el pendiente
+        # no es dinero a favor del dueño.
+        owner_paid_pending = sum(
+            (
+                se.amount_pending
+                for se in all_shared_expenses
+                if se.payer_participant and se.payer_participant.is_owner
+                and se.estado != SharedExpense.SharedExpenseStatus.COMPLETADO
+            ),
+            Decimal("0"),
+        )
+        ctx["shared_expense_pending_display"] = format_money_display(owner_paid_pending)
+        ctx["shared_expense_debtor_count"] = (
+            SharedExpenseParticipant.objects.filter(shared_expense__user=user, is_owner=False)
+            .filter(amount_paid__lt=F("amount_assigned"))
+            .values_list("contact_id", flat=True)
+            .distinct()
+            .count()
+        )
+        recent_shared_expenses = list(
+            SharedExpense.objects.filter(user=user)
+            .select_related("transaction")
+            .prefetch_related("participants")
+            .order_by("-transaction__date")[:5]
+        )
+        for se in recent_shared_expenses:
+            se.total_amount_display = format_money_display(se.total_amount)
+            se.amount_pending_display = format_money_display(se.amount_pending)
+        ctx["recent_shared_expenses"] = recent_shared_expenses
+
         ctx["monthly_chart"] = json.dumps(get_monthly_income_expense(user))
         ctx["category_chart"] = json.dumps(get_category_distribution(user))
         recent_transactions = list(Transaction.objects.filter(user=user)[:10])
@@ -741,6 +790,158 @@ class ContactGroupDeleteView(UserOwnedMixin, DeleteView):
     success_url = reverse_lazy("core:group_list")
 
 
+class SharedExpenseListView(UserOwnedMixin, ListView):
+    """Lista de gastos compartidos del usuario autenticado."""
+
+    model = SharedExpense
+    template_name = "core/shared_expenses/list.html"
+    context_object_name = "shared_expenses"
+
+    def get_queryset(self):
+        """Trae de una vez la transacción y los participantes para evitar N+1 en la tabla."""
+        return (
+            super()
+            .get_queryset()
+            .select_related("transaction__account", "transaction__category")
+            .prefetch_related("participants__contact__contact")
+        )
+
+    def get_context_data(self, **kwargs):
+        """Agrega los montos formateados de cada gasto para mostrarlos en la tabla."""
+        ctx = super().get_context_data(**kwargs)
+        for se in ctx.get("shared_expenses", []):
+            se.total_amount_display = format_money_display(se.total_amount)
+            se.amount_recovered_display = format_money_display(se.amount_recovered)
+            se.amount_pending_display = format_money_display(se.amount_pending)
+        return ctx
+
+
+class SharedExpenseCreateView(LoginRequiredMixin, SuccessMessageMixin, FormView):
+    """Creación de un gasto compartido: la construcción real (Transacción +
+    participantes + reparto) la hace `create_shared_expense`, no `form.save()`."""
+
+    form_class = SharedExpenseForm
+    template_name = "core/shared_expenses/form.html"
+    success_message = "Gasto compartido registrado."
+
+    def get_form(self, form_class=None):
+        """Instancia el formulario acotado al usuario autenticado."""
+        return SharedExpenseForm(self.request.user, **self.get_form_kwargs())
+
+    def form_valid(self, form):
+        """Crea el gasto compartido vía el servicio; muestra el error de negocio si no es válido."""
+        try:
+            self.shared_expense = create_shared_expense(
+                user=self.request.user,
+                name=form.cleaned_data["name"],
+                description=form.cleaned_data["description"],
+                account=form.cleaned_data["account"],
+                category=form.cleaned_data["category"],
+                date=form.cleaned_data["date"],
+                total_amount=form.cleaned_data["total_amount"],
+                participant_specs=form.participant_specs,
+                payer_spec=form.payer_spec,
+                split_method=form.cleaned_data["split_method"],
+            )
+        except ValidationError as exc:
+            form.add_error(None, exc.messages[0])
+            return self.form_invalid(form)
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse_lazy("core:shared_expense_detail", kwargs={"pk": self.shared_expense.pk})
+
+
+class SharedExpenseDetailView(UserOwnedMixin, DetailView):
+    """Detalle de un gasto compartido: resumen, participantes e historial de pagos."""
+
+    model = SharedExpense
+    template_name = "core/shared_expenses/detail.html"
+    context_object_name = "shared_expense"
+
+    def get_queryset(self):
+        return (
+            super()
+            .get_queryset()
+            .select_related("transaction__account", "transaction__category")
+            .prefetch_related("participants__contact__contact", "participants__payments")
+        )
+
+    def get_context_data(self, **kwargs):
+        """Agrega montos formateados del gasto y de cada participante."""
+        ctx = super().get_context_data(**kwargs)
+        se = self.object
+        se.total_amount_display = format_money_display(se.total_amount)
+        se.amount_recovered_display = format_money_display(se.amount_recovered)
+        se.amount_pending_display = format_money_display(se.amount_pending)
+        participants = list(se.participants.all())
+        for p in participants:
+            p.amount_assigned_display = format_money_display(p.amount_assigned)
+            p.amount_paid_display = format_money_display(p.amount_paid)
+            p.amount_pending_display = format_money_display(p.amount_pending)
+        ctx["participants"] = participants
+        payments = sorted(
+            (payment for p in participants for payment in p.payments.all()),
+            key=lambda payment: (payment.date, payment.created_at),
+            reverse=True,
+        )
+        for payment in payments:
+            payment.amount_display = format_money_display(payment.amount)
+        ctx["payments"] = payments
+        return ctx
+
+
+class SharedExpensePaymentCreateView(LoginRequiredMixin, SuccessMessageMixin, FormView):
+    """Registra un pago recibido de un participante de un gasto compartido."""
+
+    form_class = SharedExpensePaymentForm
+    template_name = "core/shared_expenses/payment_form.html"
+    success_message = "Pago registrado."
+
+    def dispatch(self, request, *args, **kwargs):
+        """Resuelve el gasto compartido del usuario autenticado antes de procesar la petición."""
+        self.shared_expense = get_object_or_404(
+            SharedExpense, pk=kwargs["pk"], user=request.user
+        )
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_form(self, form_class=None):
+        """Instancia el formulario acotado a los participantes de este gasto."""
+        return SharedExpensePaymentForm(self.shared_expense, **self.get_form_kwargs())
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        ctx["shared_expense"] = self.shared_expense
+        return ctx
+
+    def form_valid(self, form):
+        """Registra el pago vía el servicio; genera transacción de ingreso solo si el dueño pagó el gasto."""
+        register_shared_expense_payment(
+            participant=form.cleaned_data["participant"],
+            amount=form.cleaned_data["amount"],
+            date=form.cleaned_data["date"],
+            notes=form.cleaned_data["notes"],
+            account=form.cleaned_data.get("account"),
+        )
+        return super().form_valid(form)
+
+    def get_success_url(self):
+        return reverse_lazy("core:shared_expense_detail", kwargs={"pk": self.shared_expense.pk})
+
+
+class SharedExpenseDeleteView(UserOwnedMixin, DeleteView):
+    """Eliminación de un gasto compartido: borra también su Transacción asociada."""
+
+    model = SharedExpense
+    template_name = "core/shared_expenses/confirm_delete.html"
+    success_url = reverse_lazy("core:shared_expense_list")
+
+    def form_valid(self, form):
+        """Elimina vía el servicio (borra la Transacción, que cascada el resto)."""
+        delete_shared_expense(self.object)
+        return redirect(self.success_url)
+
+
 class TransactionListView(UserOwnedMixin, ListView):
     """Lista paginada de transacciones del usuario, filtrable por `TransactionFilterForm`."""
 
@@ -751,7 +952,9 @@ class TransactionListView(UserOwnedMixin, ListView):
 
     def get_queryset(self):
         """Aplica los filtros de búsqueda/cuenta/categoría/tipo/fecha/conciliación del formulario GET."""
-        qs = super().get_queryset().select_related("account", "category")
+        qs = super().get_queryset().select_related(
+            "account", "category", "shared_expense", "shared_expense_payment"
+        )
         form = TransactionFilterForm(self.request.user, self.request.GET)
         if form.is_valid():
             if form.cleaned_data.get("q"):
@@ -843,10 +1046,12 @@ class TransactionDeleteView(UserOwnedMixin, DeleteView):
     success_url = reverse_lazy("core:transaction_list")
 
     def form_valid(self, form):
-        """Revierte el efecto de la transacción sobre su deuda/meta asociada antes de eliminarla."""
+        """Revierte el efecto de la transacción sobre su deuda/meta/pago de gasto
+        compartido asociado antes de eliminarla."""
         with db_transaction.atomic():
             revert_transaction_from_debt(self.object)
             revert_transaction_from_goal(self.object)
+            revert_shared_expense_payment_transaction(self.object)
             return super().form_valid(form)
 
 

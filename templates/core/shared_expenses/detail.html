@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% load l10n %}
+{% block title %}{{ shared_expense.name }} · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ shared_expense.name }}</h1>
+    <div>
+        <a href="{% url 'core:shared_expense_payment_create' shared_expense.pk %}" class="btn btn-primary">Registrar pago</a>
+        <a href="{% url 'core:shared_expense_delete' shared_expense.pk %}" class="btn btn-danger">Eliminar</a>
+        <a href="{% url 'core:shared_expense_list' %}" class="btn">Volver</a>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+    <table class="table">
+        {% if shared_expense.description %}
+        <tr>
+            <th>Descripción</th>
+            <td>{{ shared_expense.description }}</td>
+        </tr>
+        {% endif %}
+        <tr>
+            <th>Cuenta</th>
+            <td>
+                {% if shared_expense.account %}
+                {{ shared_expense.account.name }}
+                {% else %}
+                — (lo pagó un contacto; no hay transacción registrada)
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Categoría</th>
+            <td>{{ shared_expense.category|default:"—" }}</td>
+        </tr>
+        <tr>
+            <th>Fecha</th>
+            <td>{{ shared_expense.date }}</td>
+        </tr>
+        <tr>
+            <th>Pagó</th>
+            <td>{{ shared_expense.payer_participant.display_name }}</td>
+        </tr>
+        <tr>
+            <th>Monto total</th>
+            <td>${{ shared_expense.total_amount_display }}</td>
+        </tr>
+        <tr>
+            <th>Recuperado</th>
+            <td>${{ shared_expense.amount_recovered_display }}</td>
+        </tr>
+        <tr>
+            <th>Pendiente</th>
+            <td>${{ shared_expense.amount_pending_display }}</td>
+        </tr>
+        <tr>
+            <th>Pagos registrados</th>
+            <td>{{ shared_expense.payment_count }}</td>
+        </tr>
+        <tr>
+            <th>Estado</th>
+            <td>
+                {% if shared_expense.estado == "completado" %}
+                <span class="badge badge-success">Completado</span>
+                {% elif shared_expense.estado == "parcial" %}
+                <span class="badge badge-warning">Parcial</span>
+                {% else %}
+                <span class="badge">Pendiente</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Progreso de recuperación</th>
+            <td>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:{% localize off %}{{ shared_expense.percent_recovered }}{% endlocalize %}%"></div>
+                </div>
+                {{ shared_expense.percent_recovered|floatformat:0 }}%
+            </td>
+        </tr>
+    </table>
+</div>
+
+<h2>Participantes</h2>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Participante</th>
+            <th class="text-right">Asignado</th>
+            <th class="text-right">Pagado</th>
+            <th class="text-right">Pendiente</th>
+            <th>Estado</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for p in participants %}
+        <tr>
+            <td>{{ p.display_name }}{% if p.is_payer %} (pagó){% endif %}</td>
+            <td class="text-right">${{ p.amount_assigned_display }}</td>
+            <td class="text-right">${{ p.amount_paid_display }}</td>
+            <td class="text-right">${{ p.amount_pending_display }}</td>
+            <td>
+                {% if p.status == "pagado" %}
+                <span class="badge badge-success">Pagado</span>
+                {% elif p.status == "parcial" %}
+                <span class="badge badge-warning">Parcial</span>
+                {% else %}
+                <span class="badge">Pendiente</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">Este gasto no tiene participantes.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<h2>Historial de pagos</h2>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Fecha</th>
+            <th>Participante</th>
+            <th class="text-right">Monto</th>
+            <th>Observación</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for payment in payments %}
+        <tr>
+            <td>{{ payment.date }}</td>
+            <td>{{ payment.participant.display_name }}</td>
+            <td class="text-right">${{ payment.amount_display }}</td>
+            <td>{{ payment.notes|default:"—" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4">No hay pagos registrados todavía.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

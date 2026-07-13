@@ -63,6 +63,22 @@
             <div class="summary-progress summary-progress-green"><span style="width: {{ goal_average_progress }}%"></span></div>
             <span class="summary-caption">{{ active_goal_count }} meta{{ active_goal_count|pluralize:"s" }} en progreso</span>
         </article>
+
+        <article class="dashboard-summary-card">
+            <div class="summary-card-top">
+                <span class="summary-icon summary-icon-violet">⇄</span>
+                <details class="dashboard-menu">
+                    <summary aria-label="Acciones de gastos compartidos">⋮</summary>
+                    <div class="dashboard-menu-items">
+                        <a href="{% url 'core:shared_expense_list' %}">Ver gastos compartidos</a>
+                        <a href="{% url 'core:shared_expense_create' %}">Nuevo gasto</a>
+                    </div>
+                </details>
+            </div>
+            <p>Pendiente por recuperar</p>
+            <strong>{{ shared_expense_pending_display }}</strong>
+            <span class="summary-caption">{{ active_shared_expense_count }} gasto{{ active_shared_expense_count|pluralize:"s" }} activo{{ active_shared_expense_count|pluralize:"s" }} · {{ shared_expense_debtor_count }} persona{{ shared_expense_debtor_count|pluralize:"s" }} con saldo pendiente</span>
+        </article>
     </div>
 
     <div class="dashboard-main-grid">
@@ -144,6 +160,30 @@
             <a href="{% url 'core:transaction_list' %}" class="dashboard-view-all">Ver todas las transacciones →</a>
         </article>
     </div>
+
+    <article class="dashboard-panel">
+        <div class="dashboard-panel-heading">
+            <div><h2>Últimos gastos compartidos</h2><p>Registrados recientemente</p></div>
+            <details class="dashboard-menu">
+                <summary aria-label="Acciones de gastos compartidos">⋮</summary>
+                <div class="dashboard-menu-items">
+                    <a href="{% url 'core:shared_expense_list' %}">Ver todos</a>
+                    <a href="{% url 'core:shared_expense_create' %}">Nuevo gasto</a>
+                </div>
+            </details>
+        </div>
+        <ul class="dashboard-transaction-list">
+            {% for se in recent_shared_expenses %}
+            <li>
+                <span class="transaction-icon transaction-icon-expense">⇄</span>
+                <span class="transaction-copy"><b>{{ se.name }}</b><small>{{ se.date|date:"d M" }} · pagó {{ se.payer_participant.display_name }}</small></span>
+                <strong class="transaction-amount transaction-amount-expense">{{ se.total_amount_display }} <small>pendiente {{ se.amount_pending_display }}</small></strong>
+            </li>
+            {% empty %}
+            <li class="dashboard-empty">Aún no hay gastos compartidos registrados.</li>
+            {% endfor %}
+        </ul>
+    </article>
 </section>
 {% endblock %}
 

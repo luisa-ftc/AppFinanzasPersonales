@@ -12,6 +12,7 @@ from datetime import date
 from types import SimpleNamespace
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.template import Context
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -28,6 +29,9 @@ from core.models import (
     ContactGroup,
     Debt,
     Goal,
+    SharedExpense,
+    SharedExpenseParticipant,
+    SharedExpensePayment,
     Transaction,
 )
 from core.services.accounts import calculate_account_balance
@@ -48,6 +52,16 @@ from core.services.goals import (
     validate_income_against_goal,
 )
 from core.services.reports import get_monthly_income_expense
+from core.services.shared_expenses import (
+    ParticipantSpec,
+    build_participant_specs,
+    calculate_equal_split,
+    create_shared_expense,
+    delete_shared_expense,
+    register_shared_expense_payment,
+    resolve_participants,
+    validate_payment_against_participant,
+)
 
 User = get_user_model()
 
@@ -1558,3 +1572,987 @@ class TestContactGroupAPI:
         )
         assert response.status_code == status.HTTP_204_NO_CONTENT
         assert Contact.objects.filter(pk=contact_juan.pk).exists()
+
+
+# ── SharedExpense (Gastos Compartidos) tests ────────────────
+
+
+@pytest.mark.django_db
+class TestSharedExpenseSplitAlgorithm:
+    def test_no_remainder(self):
+        assert calculate_equal_split(Decimal("120000.00"), 3) == [
+            Decimal("40000.00"),
+            Decimal("40000.00"),
+            Decimal("40000.00"),
+        ]
+
+    def test_single_cent_remainder_goes_to_first_position(self):
+        assert calculate_equal_split(Decimal("100000.00"), 3) == [
+            Decimal("33333.34"),
+            Decimal("33333.33"),
+            Decimal("33333.33"),
+        ]
+
+    def test_multiple_cent_remainder(self):
+        assert calculate_equal_split(Decimal("0.05"), 3) == [
+            Decimal("0.02"),
+            Decimal("0.02"),
+            Decimal("0.01"),
+        ]
+
+    def test_raises_on_zero_participants(self):
+        with pytest.raises(ValueError):
+            calculate_equal_split(Decimal("100.00"), 0)
+
+    def test_raises_on_nonpositive_amount(self):
+        with pytest.raises(ValueError):
+            calculate_equal_split(Decimal("0.00"), 3)
+
+
+@pytest.mark.django_db
+class TestResolveParticipants:
+    def test_dedup_contact_already_selected_individually_and_in_group(
+        self, user, juan, contact_juan
+    ):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        resolved = resolve_participants(
+            user, contact_ids=[contact_juan.pk], group_ids=[group.pk]
+        )
+        assert resolved == [contact_juan]
+
+    def test_dedup_contact_in_multiple_groups(self, user, contact_juan):
+        group_a = ContactGroup.objects.create(user=user, name="A")
+        group_b = ContactGroup.objects.create(user=user, name="B")
+        group_a.members.add(contact_juan)
+        group_b.members.add(contact_juan)
+        resolved = resolve_participants(
+            user, contact_ids=[], group_ids=[group_a.pk, group_b.pk]
+        )
+        assert resolved == [contact_juan]
+
+    def test_empty_group_ok_if_other_contacts_exist(self, user, contact_juan):
+        empty_group = ContactGroup.objects.create(user=user, name="Vacío")
+        resolved = resolve_participants(
+            user, contact_ids=[contact_juan.pk], group_ids=[empty_group.pk]
+        )
+        assert resolved == [contact_juan]
+
+    def test_build_participant_specs_owner_first(self, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        assert specs[0] == ParticipantSpec(True, None)
+        assert specs[1].contact == contact_juan
+        assert specs[2].contact == contact_maria
+
+    def test_build_participant_specs_without_owner(self, contact_juan):
+        specs = build_participant_specs(False, [contact_juan])
+        assert len(specs) == 1
+        assert specs[0].is_owner is False
+
+
+@pytest.mark.django_db
+class TestCreateSharedExpense:
+    def test_creates_transaction_and_discounts_account(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        balance_before = calculate_account_balance(account)
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user,
+            name="Cena",
+            description="",
+            account=account,
+            category=category,
+            date="2026-06-01",
+            total_amount=Decimal("120000.00"),
+            participant_specs=specs,
+            payer_spec=specs[0],
+        )
+        assert se.transaction.transaction_type == "expense"
+        assert se.transaction.amount == Decimal("120000.00")
+        assert calculate_account_balance(account) == balance_before - Decimal("120000.00")
+
+    def test_owner_payer_auto_settled_without_payment_row(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        owner_participant = se.participants.get(is_owner=True)
+        assert owner_participant.is_payer is True
+        assert owner_participant.amount_paid == owner_participant.amount_assigned
+        assert owner_participant.payments.count() == 0
+
+    def test_contact_payer_auto_settled_owner_owes(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        juan_participant = se.participants.get(contact=contact_juan)
+        owner_participant = se.participants.get(is_owner=True)
+        assert juan_participant.is_payer is True
+        assert juan_participant.amount_pending == Decimal("0.00")
+        assert owner_participant.is_payer is False
+        assert owner_participant.amount_pending == Decimal("40000.00")
+
+    def test_contact_payer_creates_no_transaction(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        """Si pagó un contacto, no debe crearse ninguna Transacción de gasto:
+        el usuario no desembolsó dinero real."""
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        assert se.transaction is None
+        assert se.account is None
+        assert Transaction.objects.filter(description="Cena").count() == 0
+
+    def test_owner_payer_requires_account(
+        self, user, category, contact_juan, contact_maria
+    ):
+        """Si paga el dueño, la cuenta de origen es obligatoria (sin ella no
+        hay cómo descontar dinero real de una cuenta)."""
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        with pytest.raises(ValidationError):
+            create_shared_expense(
+                user=user, name="Cena", description="", account=None, category=category,
+                date="2026-06-01", total_amount=Decimal("120000.00"),
+                participant_specs=specs, payer_spec=specs[0],
+            )
+
+    def test_requires_at_least_one_participant(self, user, account, category):
+        with pytest.raises(ValidationError):
+            create_shared_expense(
+                user=user, name="Cena", description="", account=account, category=category,
+                date="2026-06-01", total_amount=Decimal("100.00"),
+                participant_specs=[], payer_spec=ParticipantSpec(True, None),
+            )
+
+    def test_payer_must_be_participant(self, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan])
+        outsider_spec = ParticipantSpec(False, contact_maria)
+        with pytest.raises(ValidationError):
+            create_shared_expense(
+                user=user, name="Cena", description="", account=account, category=category,
+                date="2026-06-01", total_amount=Decimal("100.00"),
+                participant_specs=specs, payer_spec=outsider_spec,
+            )
+
+    def test_unique_contact_constraint(self, user, account, category, contact_juan):
+        specs = build_participant_specs(True, [contact_juan])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("100.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        with pytest.raises(Exception):
+            SharedExpenseParticipant.objects.create(
+                shared_expense=se, contact=contact_juan, amount_assigned=Decimal("50.00"),
+            )
+
+    def test_unique_owner_constraint(self, user, account, category, contact_juan):
+        specs = build_participant_specs(True, [contact_juan])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("100.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        with pytest.raises(Exception):
+            SharedExpenseParticipant.objects.create(
+                shared_expense=se, is_owner=True, amount_assigned=Decimal("50.00"),
+            )
+
+    def test_unique_payer_constraint(self, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        with pytest.raises(Exception):
+            SharedExpenseParticipant.objects.create(
+                shared_expense=se, contact=contact_maria, is_payer=True,
+                amount_assigned=Decimal("50.00"),
+            )
+
+
+@pytest.mark.django_db
+class TestSharedExpenseStatus:
+    def _create(self, user, account, category, contact_juan, contact_maria, payer_owner=True):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        payer_spec = specs[0] if payer_owner else next(s for s in specs if s.contact == contact_juan)
+        return create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=payer_spec,
+        )
+
+    def test_pendiente_when_no_debtor_has_paid(self, user, account, category, contact_juan, contact_maria):
+        se = self._create(user, account, category, contact_juan, contact_maria)
+        assert se.estado == "pendiente"
+
+    def test_parcial_when_one_debtor_partially_paid(self, user, account, category, contact_juan, contact_maria):
+        se = self._create(user, account, category, contact_juan, contact_maria)
+        juan_participant = se.participants.get(contact=contact_juan)
+        register_shared_expense_payment(
+            participant=juan_participant, amount=Decimal("20000.00"), date="2026-06-05",
+            account=account,
+        )
+        assert se.estado == "parcial"
+
+    def test_completado_when_all_debtors_fully_paid(self, user, account, category, contact_juan, contact_maria):
+        se = self._create(user, account, category, contact_juan, contact_maria)
+        for participant in se.participants.exclude(is_payer=True):
+            register_shared_expense_payment(
+                participant=participant, amount=participant.amount_pending, date="2026-06-05",
+                account=account,
+            )
+        assert se.estado == "completado"
+
+    def test_display_name_owner_contact_and_removed_contact(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        se = self._create(user, account, category, contact_juan, contact_maria)
+        assert se.participants.get(is_owner=True).display_name == "Yo"
+        assert se.participants.get(contact=contact_juan).display_name == "Juan Pérez"
+        remove_contact(user, contact_maria.contact)
+        removed = se.participants.get(pk=se.participants.get(contact_id__isnull=True, is_owner=False).pk)
+        assert removed.display_name == "Contacto eliminado"
+
+
+@pytest.mark.django_db
+class TestSharedExpensePayments:
+    def _create(self, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        return create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+
+    def test_register_payment_updates_participant(self, user, account, category, contact_juan, contact_maria):
+        se = self._create(user, account, category, contact_juan, contact_maria)
+        juan_participant = se.participants.get(contact=contact_juan)
+        payment = register_shared_expense_payment(
+            participant=juan_participant, amount=Decimal("20000.00"), date="2026-06-05",
+            account=account,
+        )
+        juan_participant.refresh_from_db()
+        assert juan_participant.amount_paid == Decimal("20000.00")
+        assert juan_participant.amount_pending == Decimal("30000.00")
+        assert juan_participant.status == "parcial"
+        assert payment.transaction is not None
+        assert payment.transaction.transaction_type == "income"
+        assert payment.transaction.amount == Decimal("20000.00")
+
+    def test_register_payment_rejects_amount_over_pending(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        se = self._create(user, account, category, contact_juan, contact_maria)
+        juan_participant = se.participants.get(contact=contact_juan)
+        with pytest.raises(ValidationError):
+            validate_payment_against_participant(juan_participant, Decimal("999999.00"))
+
+    def test_allows_partial_cumulative_payments(self, user, account, category, contact_juan, contact_maria):
+        se = self._create(user, account, category, contact_juan, contact_maria)
+        juan_participant = se.participants.get(contact=contact_juan)
+        assert juan_participant.amount_assigned == Decimal("50000.00")
+        register_shared_expense_payment(
+            participant=juan_participant, amount=Decimal("15000.00"), date="2026-06-05",
+            account=account,
+        )
+        juan_participant.refresh_from_db()
+        register_shared_expense_payment(
+            participant=juan_participant, amount=Decimal("35000.00"), date="2026-06-10",
+            account=account,
+        )
+        juan_participant.refresh_from_db()
+        assert juan_participant.amount_paid == Decimal("50000.00")
+        assert juan_participant.status == "pagado"
+        assert SharedExpensePayment.objects.filter(participant=juan_participant).count() == 2
+
+    def test_owner_paid_payment_requires_account(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        """Si el dueño pagó el gasto, la cuenta donde se recibió el pago es obligatoria."""
+        se = self._create(user, account, category, contact_juan, contact_maria)
+        juan_participant = se.participants.get(contact=contact_juan)
+        with pytest.raises(ValidationError):
+            register_shared_expense_payment(
+                participant=juan_participant, amount=Decimal("20000.00"), date="2026-06-05",
+            )
+
+    def test_owner_pays_own_share_creates_expense_transaction(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        """Si pagó un contacto (Juan) y el dueño salda su propia parte, debe
+        generarse una Transacción de tipo gasto: es el momento real en que
+        sale dinero de una cuenta del dueño."""
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        balance_before = calculate_account_balance(account)
+        owner_participant = se.participants.get(is_owner=True)
+        payment = register_shared_expense_payment(
+            participant=owner_participant, amount=Decimal("40000.00"), date="2026-06-05",
+            account=account,
+        )
+        assert payment.transaction is not None
+        assert payment.transaction.transaction_type == "expense"
+        assert payment.transaction.amount == Decimal("40000.00")
+        assert payment.account == account
+        owner_participant.refresh_from_db()
+        assert owner_participant.amount_paid == Decimal("40000.00")
+        assert calculate_account_balance(account) == balance_before - Decimal("40000.00")
+
+    def test_owner_pays_own_share_requires_account(
+        self, user, category, contact_juan, contact_maria
+    ):
+        """Sin cuenta, no hay cómo descontar el pago del dueño de una cuenta real."""
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        owner_participant = se.participants.get(is_owner=True)
+        with pytest.raises(ValidationError):
+            register_shared_expense_payment(
+                participant=owner_participant, amount=Decimal("40000.00"), date="2026-06-05",
+            )
+
+    def test_payment_between_two_contacts_creates_no_transaction(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        """Si María (un contacto) le paga a Juan (otro contacto, el pagador
+        original), el dueño no participa en ese movimiento: sigue siendo
+        puramente informativo, sin ninguna Transacción."""
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        maria_participant = se.participants.get(contact=contact_maria)
+        payment = register_shared_expense_payment(
+            participant=maria_participant, amount=Decimal("40000.00"), date="2026-06-05",
+            account=account,  # se pasa igual, pero debe ignorarse: no es su movimiento
+        )
+        assert payment.transaction is None
+        assert payment.account is None
+        maria_participant.refresh_from_db()
+        assert maria_participant.amount_paid == Decimal("40000.00")
+        assert Transaction.objects.count() == 0
+
+
+@pytest.mark.django_db
+class TestDeleteSharedExpense:
+    def test_deletes_transaction_and_cascades(self, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        tx_pk = se.transaction.pk
+        delete_shared_expense(se)
+        assert not Transaction.objects.filter(pk=tx_pk).exists()
+        assert not SharedExpense.objects.filter(pk=se.pk).exists()
+        assert not SharedExpenseParticipant.objects.filter(shared_expense_id=se.pk).exists()
+
+    def test_reverts_account_balance(self, user, account, category, contact_juan, contact_maria):
+        balance_before = calculate_account_balance(account)
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        delete_shared_expense(se)
+        assert calculate_account_balance(account) == balance_before
+
+    def test_delete_contact_paid_expense_has_no_transaction_to_cascade_from(
+        self, user, category, contact_juan, contact_maria
+    ):
+        """Sin Transacción de gasto (pagó un contacto), se borra el
+        SharedExpense directamente y cascada igual sus participantes."""
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        se_pk = se.pk
+        delete_shared_expense(se)
+        assert not SharedExpense.objects.filter(pk=se_pk).exists()
+        assert not SharedExpenseParticipant.objects.filter(shared_expense_id=se_pk).exists()
+
+    def test_delete_does_not_touch_income_transactions_already_received(
+        self, user, account, category, contact_juan, contact_maria
+    ):
+        """Borrar el gasto compartido no debe borrar las Transacciones de
+        ingreso de pagos ya recibidos: ese dinero entró de verdad a una cuenta."""
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        juan_participant = se.participants.get(contact=contact_juan)
+        payment = register_shared_expense_payment(
+            participant=juan_participant, amount=Decimal("20000.00"), date="2026-06-05",
+            account=account,
+        )
+        income_tx_pk = payment.transaction.pk
+        delete_shared_expense(se)
+        assert Transaction.objects.filter(pk=income_tx_pk).exists()
+
+
+@pytest.mark.django_db
+class TestSharedExpenseWebViews:
+    def test_list_scoped_to_user(self, client, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        client.force_login(user)
+        response = client.get(reverse("core:shared_expense_list"))
+        assert response.status_code == 200
+        assert b"Cena" in response.content
+
+    def test_create_full_flow(self, client, user, account, category, contact_juan, contact_maria):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:shared_expense_create"),
+            {
+                "name": "Cena grupo",
+                "description": "",
+                "split_method": "equal",
+                "account": account.pk,
+                "category": category.pk,
+                "date": "2026-06-01",
+                "total_amount": "120000.00",
+                "include_owner": "on",
+                "contacts": [contact_juan.pk, contact_maria.pk],
+                "groups": [],
+                "payer": "owner",
+            },
+        )
+        assert response.status_code == 302
+        se = SharedExpense.objects.get(user=user, name="Cena grupo")
+        assert se.participant_count == 3
+        assert se.total_amount == Decimal("120000.00")
+
+    def test_create_with_contact_payer_no_account_needed(
+        self, client, user, category, contact_juan, contact_maria
+    ):
+        """Si el pagador es un contacto, la cuenta puede quedar vacía y no se crea Transacción."""
+        client.force_login(user)
+        response = client.post(
+            reverse("core:shared_expense_create"),
+            {
+                "name": "Peaje", "description": "", "split_method": "equal",
+                "category": category.pk, "date": "2026-06-01", "total_amount": "60000.00",
+                "include_owner": "on", "contacts": [contact_juan.pk], "groups": [],
+                "payer": f"contact:{contact_juan.pk}",
+            },
+        )
+        assert response.status_code == 302
+        se = SharedExpense.objects.get(user=user, name="Peaje")
+        assert se.transaction is None
+        assert se.account is None
+
+    def test_create_owner_payer_without_account_blocked(
+        self, client, user, category, contact_juan, contact_maria
+    ):
+        """Si el pagador es el dueño y no se elige cuenta, debe fallar con error, no un 500."""
+        client.force_login(user)
+        response = client.post(
+            reverse("core:shared_expense_create"),
+            {
+                "name": "Sin cuenta", "description": "", "split_method": "equal",
+                "category": category.pk, "date": "2026-06-01", "total_amount": "60000.00",
+                "include_owner": "on", "contacts": [contact_juan.pk], "groups": [],
+                "payer": "owner",
+            },
+        )
+        assert response.status_code == 200  # re-render con error
+        assert not SharedExpense.objects.filter(name="Sin cuenta").exists()
+
+    def test_create_requires_participant(self, client, user, account, category):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:shared_expense_create"),
+            {
+                "name": "Cena sola", "description": "", "split_method": "equal",
+                "account": account.pk, "category": category.pk, "date": "2026-06-01",
+                "total_amount": "100.00", "payer": "owner",
+            },
+        )
+        assert response.status_code == 200  # re-render con error
+        assert not SharedExpense.objects.filter(name="Cena sola").exists()
+
+    def test_detail_shows_participants_and_payments(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        register_shared_expense_payment(
+            participant=se.participants.get(contact=contact_juan),
+            amount=Decimal("20000.00"), date="2026-06-05", notes="Abono",
+            account=account,
+        )
+        client.force_login(user)
+        response = client.get(reverse("core:shared_expense_detail", kwargs={"pk": se.pk}))
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "Juan P" in content
+        assert "20,000.00" in content
+
+    def test_payment_create_rejects_over_payment(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        juan_participant = se.participants.get(contact=contact_juan)
+        client.force_login(user)
+        response = client.post(
+            reverse("core:shared_expense_payment_create", kwargs={"pk": se.pk}),
+            {
+                "participant": juan_participant.pk,
+                "amount": "999999.00",
+                "date": "2026-06-05",
+                "notes": "",
+            },
+        )
+        assert response.status_code == 200  # re-render con error
+        juan_participant.refresh_from_db()
+        assert juan_participant.amount_paid == Decimal("0.00")
+
+    def test_payment_owner_pays_own_share_creates_expense_web(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        """El formulario web debe exigir cuenta y generar un gasto cuando el
+        dueño paga su propia parte (gasto pagado originalmente por Juan)."""
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        owner_participant = se.participants.get(is_owner=True)
+        client.force_login(user)
+        response = client.post(
+            reverse("core:shared_expense_payment_create", kwargs={"pk": se.pk}),
+            {
+                "participant": owner_participant.pk, "amount": "40000.00",
+                "date": "2026-06-05", "account": account.pk, "notes": "",
+            },
+        )
+        assert response.status_code == 302
+        owner_participant.refresh_from_db()
+        assert owner_participant.amount_paid == Decimal("40000.00")
+        assert Transaction.objects.filter(transaction_type="expense", amount=Decimal("40000.00")).exists()
+
+    def test_payment_owner_pays_own_share_without_account_blocked_web(
+        self, client, user, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        owner_participant = se.participants.get(is_owner=True)
+        client.force_login(user)
+        response = client.post(
+            reverse("core:shared_expense_payment_create", kwargs={"pk": se.pk}),
+            {
+                "participant": owner_participant.pk, "amount": "40000.00",
+                "date": "2026-06-05", "notes": "",
+            },
+        )
+        assert response.status_code == 200  # re-render con error
+        owner_participant.refresh_from_db()
+        assert owner_participant.amount_paid == Decimal("0.00")
+
+    def test_delete_view_deletes_transaction(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        tx_pk = se.transaction.pk
+        client.force_login(user)
+        response = client.post(reverse("core:shared_expense_delete", kwargs={"pk": se.pk}))
+        assert response.status_code == 302
+        assert not Transaction.objects.filter(pk=tx_pk).exists()
+
+    def test_no_update_url_exists(self):
+        from django.urls import NoReverseMatch
+
+        with pytest.raises(NoReverseMatch):
+            reverse("core:shared_expense_update", kwargs={"pk": 1})
+
+
+@pytest.mark.django_db
+class TestSharedExpenseAPI:
+    def test_create_full_flow(self, api_client, user, account, category, contact_juan, contact_maria):
+        response = api_client.post(
+            reverse("shared-expense-list"),
+            {
+                "name": "Cena API",
+                "split_method": "equal",
+                "account": account.pk,
+                "category": category.pk,
+                "date": "2026-06-01",
+                "total_amount": "120000.00",
+                "include_owner": True,
+                "contacts": [contact_juan.pk, contact_maria.pk],
+                "payer": "owner",
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["participant_count"] == 3
+
+    def test_create_with_contact_payer_no_account_needed(
+        self, api_client, user, category, contact_juan, contact_maria
+    ):
+        response = api_client.post(
+            reverse("shared-expense-list"),
+            {
+                "name": "Peaje API", "split_method": "equal", "category": category.pk,
+                "date": "2026-06-01", "total_amount": "60000.00", "include_owner": True,
+                "contacts": [contact_juan.pk], "payer": f"contact:{contact_juan.pk}",
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        se = SharedExpense.objects.get(user=user, name="Peaje API")
+        assert se.transaction is None
+        assert response.data["account_detail"] is None
+
+    def test_create_owner_payer_without_account_blocked(
+        self, api_client, user, category, contact_juan, contact_maria
+    ):
+        response = api_client.post(
+            reverse("shared-expense-list"),
+            {
+                "name": "Sin cuenta API", "split_method": "equal", "category": category.pk,
+                "date": "2026-06-01", "total_amount": "60000.00", "include_owner": True,
+                "contacts": [contact_juan.pk], "payer": "owner",
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert not SharedExpense.objects.filter(name="Sin cuenta API").exists()
+
+    def test_register_payment_action(self, api_client, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        juan_participant = se.participants.get(contact=contact_juan)
+        response = api_client.post(
+            reverse("shared-expense-register-payment", kwargs={"pk": se.pk}),
+            {
+                "participant": juan_participant.pk, "amount": "20000.00",
+                "date": "2026-06-05", "account": account.pk,
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        juan_participant.refresh_from_db()
+        assert juan_participant.amount_paid == Decimal("20000.00")
+
+    def test_register_payment_owner_pays_own_share_creates_expense_api(
+        self, api_client, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        owner_participant = se.participants.get(is_owner=True)
+        response = api_client.post(
+            reverse("shared-expense-register-payment", kwargs={"pk": se.pk}),
+            {
+                "participant": owner_participant.pk, "amount": "40000.00",
+                "date": "2026-06-05", "account": account.pk,
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        owner_participant.refresh_from_db()
+        assert owner_participant.amount_paid == Decimal("40000.00")
+        assert Transaction.objects.filter(transaction_type="expense", amount=Decimal("40000.00")).exists()
+
+    def test_register_payment_owner_pays_own_share_without_account_blocked_api(
+        self, api_client, user, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs if s.contact == contact_juan)
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=None, category=category,
+            date="2026-06-01", total_amount=Decimal("120000.00"),
+            participant_specs=specs, payer_spec=juan_spec,
+        )
+        owner_participant = se.participants.get(is_owner=True)
+        response = api_client.post(
+            reverse("shared-expense-register-payment", kwargs={"pk": se.pk}),
+            {"participant": owner_participant.pk, "amount": "40000.00", "date": "2026-06-05"},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_delete_cascades(self, api_client, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        tx_pk = se.transaction.pk
+        response = api_client.delete(reverse("shared-expense-detail", kwargs={"pk": se.pk}))
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert not Transaction.objects.filter(pk=tx_pk).exists()
+
+    def test_list_scoped(self, api_client, user, account, category, contact_juan, juan):
+        specs = build_participant_specs(True, [contact_juan])
+        create_shared_expense(
+            user=user, name="Mío", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("100.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        other_account = Account.objects.create(user=juan, name="Otra", initial_balance=Decimal("0"))
+        other_category = Category.objects.create(user=juan, name="Otra", category_type="expense")
+        add_contact(juan, user)
+        other_contact = Contact.objects.get(user=juan, contact=user)
+        other_specs = build_participant_specs(True, [other_contact])
+        create_shared_expense(
+            user=juan, name="Ajeno", description="", account=other_account, category=other_category,
+            date="2026-06-01", total_amount=Decimal("100.00"),
+            participant_specs=other_specs, payer_spec=other_specs[0],
+        )
+        response = api_client.get(reverse("shared-expense-list"))
+        results = response.data.get("results", response.data)
+        names = [se["name"] for se in results]
+        assert names == ["Mío"]
+
+    def test_rejects_put_and_patch(self, api_client, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        response = api_client.patch(
+            reverse("shared-expense-detail", kwargs={"pk": se.pk}), {"name": "Editado"}, format="json"
+        )
+        assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+
+@pytest.mark.django_db
+class TestSharedExpenseDashboard:
+    def test_pending_only_counts_owner_paid_cases(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        specs_owner = build_participant_specs(True, [contact_juan])
+        create_shared_expense(
+            user=user, name="Pagué yo", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("100.00"),
+            participant_specs=specs_owner, payer_spec=specs_owner[0],
+        )
+        specs_contact = build_participant_specs(True, [contact_juan, contact_maria])
+        juan_spec = next(s for s in specs_contact if s.contact == contact_juan)
+        create_shared_expense(
+            user=user, name="Pagó Juan", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("300.00"),
+            participant_specs=specs_contact, payer_spec=juan_spec,
+        )
+        client.force_login(user)
+        response = client.get(reverse("core:dashboard"))
+        assert response.status_code == 200
+        # Solo "Pagué yo" cuenta como pendiente por recuperar: 50.00 (la mitad de 100)
+        assert "50.00" in response.content.decode()
+
+    def test_debtor_count_distinct_contacts(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        client.force_login(user)
+        response = client.get(reverse("core:dashboard"))
+        assert response.status_code == 200
+
+
+@pytest.mark.django_db
+class TestTransactionSharedExpenseGuard:
+    def test_web_edit_blocked_for_linked_transaction(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        client.force_login(user)
+        response = client.post(
+            reverse("core:transaction_update", kwargs={"pk": se.transaction.pk}),
+            {
+                "account": account.pk, "transaction_type": "expense",
+                "amount": "999.00", "description": "Editado", "date": "2026-06-01",
+                "asociar_a": "",
+            },
+        )
+        assert response.status_code == 200  # re-render con error, no guarda
+        se.transaction.refresh_from_db()
+        assert se.transaction.amount == Decimal("150000.00")
+
+    def test_web_delete_of_linked_transaction_still_allowed(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        tx_pk = se.transaction.pk
+        client.force_login(user)
+        response = client.post(reverse("core:transaction_delete", kwargs={"pk": tx_pk}))
+        assert response.status_code == 302
+        assert not Transaction.objects.filter(pk=tx_pk).exists()
+        assert not SharedExpense.objects.filter(pk=se.pk).exists()
+
+    def test_api_edit_blocked_for_linked_transaction(
+        self, api_client, user, account, category, contact_juan, contact_maria
+    ):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        response = api_client.patch(
+            reverse("transaction-detail", kwargs={"pk": se.transaction.pk}),
+            {"amount": "999.00"},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def _create_with_payment(self, user, account, category, contact_juan, contact_maria):
+        specs = build_participant_specs(True, [contact_juan, contact_maria])
+        se = create_shared_expense(
+            user=user, name="Cena", description="", account=account, category=category,
+            date="2026-06-01", total_amount=Decimal("150000.00"),
+            participant_specs=specs, payer_spec=specs[0],
+        )
+        juan_participant = se.participants.get(contact=contact_juan)
+        payment = register_shared_expense_payment(
+            participant=juan_participant, amount=Decimal("20000.00"), date="2026-06-05",
+            account=account,
+        )
+        return se, juan_participant, payment
+
+    def test_web_edit_blocked_for_income_transaction(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        se, juan_participant, payment = self._create_with_payment(
+            user, account, category, contact_juan, contact_maria
+        )
+        client.force_login(user)
+        response = client.post(
+            reverse("core:transaction_update", kwargs={"pk": payment.transaction.pk}),
+            {
+                "account": account.pk, "transaction_type": "income",
+                "amount": "999.00", "description": "Editado", "date": "2026-06-05",
+                "asociar_a": "",
+            },
+        )
+        assert response.status_code == 200  # re-render con error, no guarda
+        payment.transaction.refresh_from_db()
+        assert payment.transaction.amount == Decimal("20000.00")
+
+    def test_api_edit_blocked_for_income_transaction(
+        self, api_client, user, account, category, contact_juan, contact_maria
+    ):
+        se, juan_participant, payment = self._create_with_payment(
+            user, account, category, contact_juan, contact_maria
+        )
+        response = api_client.patch(
+            reverse("transaction-detail", kwargs={"pk": payment.transaction.pk}),
+            {"amount": "999.00"},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_web_delete_of_income_transaction_reverts_amount_paid(
+        self, client, user, account, category, contact_juan, contact_maria
+    ):
+        se, juan_participant, payment = self._create_with_payment(
+            user, account, category, contact_juan, contact_maria
+        )
+        tx_pk = payment.transaction.pk
+        client.force_login(user)
+        response = client.post(reverse("core:transaction_delete", kwargs={"pk": tx_pk}))
+        assert response.status_code == 302
+        assert not Transaction.objects.filter(pk=tx_pk).exists()
+        juan_participant.refresh_from_db()
+        assert juan_participant.amount_paid == Decimal("0.00")
+
+    def test_api_delete_of_income_transaction_reverts_amount_paid(
+        self, api_client, user, account, category, contact_juan, contact_maria
+    ):
+        se, juan_participant, payment = self._create_with_payment(
+            user, account, category, contact_juan, contact_maria
+        )
+        tx_pk = payment.transaction.pk
+        response = api_client.delete(reverse("transaction-detail", kwargs={"pk": tx_pk}))
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        juan_participant.refresh_from_db()
+        assert juan_participant.amount_paid == Decimal("0.00")

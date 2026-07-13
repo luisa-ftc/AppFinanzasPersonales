@@ -646,6 +646,307 @@ class ContactGroupMembership(models.Model):
         return f"{self.contact.contact.email} en {self.group.name}"
 
 
+class SharedExpense(models.Model):
+    """Gasto pagado por el usuario (o por un contacto) y repartido entre
+    varios participantes, con seguimiento de cuánto le deben devolver.
+
+    `category`/`date`/`total_amount` son campos propios (no proxies): son
+    necesarios siempre, incluso cuando no hay una `Transaction` real (ver
+    abajo). Nomenclatura en inglés (a diferencia de `Debt`/`Goal`, en
+    español) porque este módulo se integra directamente con
+    `Transaction`/`Contact`/`ContactGroup`, que ya son en inglés.
+
+    `account`/`transaction` son opcionales: solo se completan cuando el
+    dueño de la app es quien realmente pagó (`is_owner=True` en el
+    participante pagador), porque solo en ese caso salió dinero real de una
+    de sus cuentas. Si pagó un contacto, el gasto es puramente informativo
+    (seguimiento de reparto) y no genera ninguna `Transaction`.
+    """
+
+    class SplitMethod(models.TextChoices):
+        EQUAL = "equal", "Igualitaria"
+        # Futuro: PERCENTAGE = "percentage", "Por porcentajes"
+        #         CUSTOM = "custom", "Montos personalizados"
+
+    class SharedExpenseStatus(models.TextChoices):
+        PENDIENTE = "pendiente", "Pendiente"
+        PARCIAL = "parcial", "Parcial"
+        COMPLETADO = "completado", "Completado"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="shared_expenses",
+    )
+    name = models.CharField("nombre", max_length=150)
+    description = models.TextField("descripción", blank=True)
+    category = models.ForeignKey(
+        "Category",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shared_expenses",
+    )
+    date = models.DateField("fecha")
+    total_amount = models.DecimalField(
+        "monto total",
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    split_method = models.CharField(
+        "método de división",
+        max_length=20,
+        choices=SplitMethod.choices,
+        default=SplitMethod.EQUAL,
+    )
+    account = models.ForeignKey(
+        "Account",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shared_expenses",
+        verbose_name="cuenta de origen",
+        help_text="Solo se completa cuando el dueño de la app es quien pagó.",
+    )
+    transaction = models.OneToOneField(
+        "Transaction",
+        on_delete=models.CASCADE,
+        related_name="shared_expense",
+        null=True,
+        blank=True,
+        editable=False,
+        verbose_name="transacción de gasto asociada",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "gasto compartido"
+        verbose_name_plural = "gastos compartidos"
+        ordering = ["-date", "-created_at"]
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def payer_participant(self):
+        """Fila del participante que pagó (siempre exactamente una, tras crear el gasto)."""
+        return next((p for p in self.participants.all() if p.is_payer), None)
+
+    @property
+    def amount_recovered(self):
+        """Suma de lo pagado por todos los participantes (incluida la parte
+        auto-saldada del pagador)."""
+        return sum((p.amount_paid for p in self.participants.all()), Decimal("0.00"))
+
+    @property
+    def amount_pending(self):
+        return self.total_amount - self.amount_recovered
+
+    @property
+    def percent_recovered(self):
+        if self.total_amount == 0:
+            return Decimal("0")
+        return min(
+            (self.amount_recovered / self.total_amount) * 100, Decimal("100")
+        )
+
+    @property
+    def participant_count(self):
+        return self.participants.count()
+
+    @property
+    def payment_count(self):
+        return SharedExpensePayment.objects.filter(participant__shared_expense=self).count()
+
+    @property
+    def estado(self):
+        """Estado derivado excluyendo la fila del pagador (siempre auto-saldada)
+        del cómputo: solo importa si los demás participantes (deudores) han
+        pagado su parte o no. Los montos agregados (`amount_recovered`/
+        `amount_pending`) sí incluyen la parte del pagador."""
+        debtors = [p for p in self.participants.all() if not p.is_payer]
+        if not debtors:
+            return self.SharedExpenseStatus.COMPLETADO
+        if all(p.amount_paid <= 0 for p in debtors):
+            return self.SharedExpenseStatus.PENDIENTE
+        if all(p.amount_pending <= 0 for p in debtors):
+            return self.SharedExpenseStatus.COMPLETADO
+        return self.SharedExpenseStatus.PARCIAL
+
+    @property
+    def estado_display(self):
+        return self.SharedExpenseStatus(self.estado).label
+
+
+class SharedExpenseParticipant(models.Model):
+    """Participación de un usuario (el dueño o un contacto) en un gasto compartido.
+
+    El dueño se representa con `is_owner=True, contact=None` (nunca un
+    `Contact`, porque un usuario no es contacto de sí mismo). Un contacto
+    eliminado (`remove_contact`) deja `contact=NULL` vía `SET_NULL` pero con
+    `is_owner=False`, distinguible sin ambigüedad de la fila del dueño.
+    """
+
+    class ParticipantStatus(models.TextChoices):
+        PENDIENTE = "pendiente", "Pendiente"
+        PARCIAL = "parcial", "Parcial"
+        PAGADO = "pagado", "Pagado"
+
+    shared_expense = models.ForeignKey(
+        SharedExpense,
+        on_delete=models.CASCADE,
+        related_name="participants",
+    )
+    contact = models.ForeignKey(
+        Contact,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shared_expense_participations",
+    )
+    is_owner = models.BooleanField("es el dueño", default=False)
+    is_payer = models.BooleanField("es quien pagó", default=False)
+    position = models.PositiveSmallIntegerField(
+        "posición",
+        default=0,
+        help_text="Orden de aparición usado para el reparto de céntimos sobrantes.",
+    )
+    amount_assigned = models.DecimalField(
+        "monto asignado",
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    amount_paid = models.DecimalField(
+        "monto pagado",
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "participante de gasto compartido"
+        verbose_name_plural = "participantes de gasto compartido"
+        ordering = ["position", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shared_expense", "contact"],
+                name="shx_participant_unique_contact",
+            ),
+            models.UniqueConstraint(
+                fields=["shared_expense"],
+                condition=models.Q(is_owner=True),
+                name="shx_participant_unique_owner",
+            ),
+            models.UniqueConstraint(
+                fields=["shared_expense"],
+                condition=models.Q(is_payer=True),
+                name="shx_participant_unique_payer",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.display_name} en {self.shared_expense.name}"
+
+    def clean(self):
+        """Valida que un participante sea el dueño o un contacto, nunca ambos ni ninguno."""
+        if self.is_owner and self.contact_id:
+            raise ValidationError(
+                "Un participante no puede ser el dueño y un contacto a la vez."
+            )
+        if not self.is_owner and not self.contact_id:
+            raise ValidationError("Un participante debe ser el dueño o un contacto.")
+
+    @property
+    def amount_pending(self):
+        return max(self.amount_assigned - self.amount_paid, Decimal("0.00"))
+
+    @property
+    def status(self):
+        if self.amount_paid <= 0:
+            return self.ParticipantStatus.PENDIENTE
+        if self.amount_pending <= 0:
+            return self.ParticipantStatus.PAGADO
+        return self.ParticipantStatus.PARCIAL
+
+    @property
+    def status_display(self):
+        return self.ParticipantStatus(self.status).label
+
+    @property
+    def display_name(self):
+        """Nombre a mostrar: "Yo" para el dueño, el nombre del contacto, o un
+        aviso si el contacto fue eliminado después de crear el gasto."""
+        if self.is_owner:
+            return "Yo"
+        if self.contact_id:
+            u = self.contact.contact
+            return u.get_full_name() or u.username
+        return "Contacto eliminado"
+
+
+class SharedExpensePayment(models.Model):
+    """Registro de que un participante saldó (total o parcialmente) su parte
+    de un gasto compartido.
+
+    El saldo vive cacheado en `SharedExpenseParticipant.amount_paid`
+    (actualizado por el servicio); este modelo es el historial de auditoría
+    de esos abonos. Genera una `Transaction` real **solo** cuando el dueño de
+    la app participa directamente en ese pago concreto — ver
+    `core.services.shared_expenses.get_shared_expense_payment_transaction_type`:
+    de tipo gasto si el dueño está saldando su propia parte (pagó un
+    contacto), de tipo ingreso si el dueño está cobrando (pagó él). Si el
+    movimiento es entre dos contactos, sigue siendo informativo, sin
+    `account`/`transaction`.
+    """
+
+    participant = models.ForeignKey(
+        SharedExpenseParticipant,
+        on_delete=models.CASCADE,
+        related_name="payments",
+    )
+    amount = models.DecimalField(
+        "monto",
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    date = models.DateField("fecha")
+    notes = models.TextField("observación", blank=True)
+    account = models.ForeignKey(
+        "Account",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="shared_expense_payments",
+        verbose_name="cuenta asociada",
+        help_text="Cuenta desde donde pagaste o donde recibiste el dinero, si aplica.",
+    )
+    transaction = models.OneToOneField(
+        "Transaction",
+        on_delete=models.CASCADE,
+        related_name="shared_expense_payment",
+        null=True,
+        blank=True,
+        editable=False,
+        verbose_name="transacción asociada",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "pago de gasto compartido"
+        verbose_name_plural = "pagos de gastos compartidos"
+        ordering = ["-date", "-created_at"]
+
+    def __str__(self):
+        return f"{self.participant.display_name}: {self.amount} ({self.date})"
+
+
 def attachment_upload_path(instance, filename):
     """Ruta de almacenamiento de un adjunto, aislada por usuario y transacción."""
     return f"attachments/{instance.transaction.user_id}/{instance.transaction_id}/{filename}"

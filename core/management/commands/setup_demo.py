@@ -13,11 +13,18 @@ from core.models import (
     ContactGroup,
     Debt,
     Goal,
+    SharedExpense,
     Tag,
     Transaction,
     User,
 )
 from core.services.contacts import add_contact
+from core.services.shared_expenses import (
+    ParticipantSpec,
+    build_participant_specs,
+    create_shared_expense,
+    register_shared_expense_payment,
+)
 
 
 class Command(BaseCommand):
@@ -208,6 +215,7 @@ class Command(BaseCommand):
             maria.set_password("demo1234")
             maria.save()
         add_contact(user, juan)
+        add_contact(user, maria)
 
         # Grupo demo con el contacto Juan como integrante (add es idempotente).
         grupo, _ = ContactGroup.objects.get_or_create(
@@ -216,6 +224,57 @@ class Command(BaseCommand):
             defaults={"description": "Gastos del viaje a Cartagena"},
         )
         contacto_juan = Contact.objects.get(user=user, contact=juan)
+        contacto_maria = Contact.objects.get(user=user, contact=maria)
         grupo.members.add(contacto_juan)
+
+        # Gasto compartido demo: el dueño paga, Juan y María son participantes,
+        # con un pago parcial de Juan ya registrado.
+        if not SharedExpense.objects.filter(user=user, name="Cena grupo Cartagena").exists():
+            specs = build_participant_specs(True, [contacto_juan, contacto_maria])
+            shared_expense = create_shared_expense(
+                user=user,
+                name="Cena grupo Cartagena",
+                description="Cena del viaje a Cartagena",
+                account=checking,
+                category=food_cat,
+                date="2026-02-20",
+                total_amount=Decimal("150000.00"),
+                participant_specs=specs,
+                payer_spec=ParticipantSpec(True, None),
+            )
+            juan_participant = shared_expense.participants.get(contact=contacto_juan)
+            register_shared_expense_payment(
+                participant=juan_participant,
+                amount=Decimal("20000.00"),
+                date="2026-02-25",
+                notes="Abono parcial",
+                account=checking,
+            )
+
+        # Segundo gasto demo: pagó un contacto (Juan), no el dueño. No genera
+        # ninguna Transacción de gasto — es puramente informativo.
+        if not SharedExpense.objects.filter(user=user, name="Peaje pagado por Juan").exists():
+            specs_juan_paga = build_participant_specs(True, [contacto_juan])
+            juan_spec = next(s for s in specs_juan_paga if s.contact == contacto_juan)
+            peaje = create_shared_expense(
+                user=user,
+                name="Peaje pagado por Juan",
+                description="Juan adelantó el peaje del viaje",
+                account=None,
+                category=transport_cat,
+                date="2026-02-18",
+                total_amount=Decimal("30000.00"),
+                participant_specs=specs_juan_paga,
+                payer_spec=juan_spec,
+            )
+            # El dueño salda su propia parte: sí genera una Transacción de gasto real.
+            owner_participant_peaje = peaje.participants.get(is_owner=True)
+            register_shared_expense_payment(
+                participant=owner_participant_peaje,
+                amount=Decimal("15000.00"),
+                date="2026-02-22",
+                notes="Le pagué a Juan mi parte del peaje",
+                account=checking,
+            )
 
         self.stdout.write(self.style.SUCCESS("Datos de demostración cargados correctamente."))

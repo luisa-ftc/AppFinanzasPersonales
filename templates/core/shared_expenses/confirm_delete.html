@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Eliminar gasto compartido · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>Eliminar gasto compartido</h1>
+    <p>¿Estás seguro de que deseas eliminar <strong>{{ object.name }}</strong>?</p>
+    <p class="help-text">
+        Esto también eliminará la transacción asociada (el dinero descontado
+        de la cuenta) y todo el historial de participantes y pagos de este gasto.
+    </p>
+    <form method="post">
+        {% csrf_token %}
+        <div class="form-actions">
+            <button type="submit" class="btn btn-danger">Eliminar</button>
+            <a href="{% url 'core:shared_expense_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

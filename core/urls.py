@@ -110,6 +110,32 @@ urlpatterns = [
         views.ContactGroupDeleteView.as_view(),
         name="group_delete",
     ),
+    # Shared expenses (Gastos compartidos)
+    path(
+        "shared-expenses/",
+        views.SharedExpenseListView.as_view(),
+        name="shared_expense_list",
+    ),
+    path(
+        "shared-expenses/new/",
+        views.SharedExpenseCreateView.as_view(),
+        name="shared_expense_create",
+    ),
+    path(
+        "shared-expenses/<int:pk>/",
+        views.SharedExpenseDetailView.as_view(),
+        name="shared_expense_detail",
+    ),
+    path(
+        "shared-expenses/<int:pk>/delete/",
+        views.SharedExpenseDeleteView.as_view(),
+        name="shared_expense_delete",
+    ),
+    path(
+        "shared-expenses/<int:pk>/payments/new/",
+        views.SharedExpensePaymentCreateView.as_view(),
+        name="shared_expense_payment_create",
+    ),
     # Transactions
     path("transactions/", views.TransactionListView.as_view(), name="transaction_list"),
     path("transactions/new/", views.TransactionCreateView.as_view(), name="transaction_create"),

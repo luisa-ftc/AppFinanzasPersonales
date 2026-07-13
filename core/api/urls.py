@@ -19,6 +19,7 @@ router.register("debts", views.DebtViewSet, basename="debt")
 router.register("goals", views.GoalViewSet, basename="goal")
 router.register("contacts", views.ContactViewSet, basename="contact")
 router.register("contact-groups", views.ContactGroupViewSet, basename="contact-group")
+router.register("shared-expenses", views.SharedExpenseViewSet, basename="shared-expense")
 router.register("transactions", views.TransactionViewSet, basename="transaction")
 
 urlpatterns = [

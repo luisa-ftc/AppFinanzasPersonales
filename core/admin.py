@@ -14,6 +14,9 @@ from core.models import (
     ContactGroupMembership,
     Debt,
     Goal,
+    SharedExpense,
+    SharedExpenseParticipant,
+    SharedExpensePayment,
     Tag,
     Transaction,
     User,
@@ -124,6 +127,35 @@ class ContactGroupAdmin(admin.ModelAdmin):
     list_display = ("name", "user", "created_at")
     search_fields = ("name", "user__email")
     inlines = [ContactGroupMembershipInline]
+
+
+class SharedExpensePaymentInline(admin.TabularInline):
+    model = SharedExpensePayment
+    extra = 0
+
+
+@admin.register(SharedExpenseParticipant)
+class SharedExpenseParticipantAdmin(admin.ModelAdmin):
+    """Registrado como standalone (además de anidado en `SharedExpenseAdmin`)
+    para poder anidar a su vez `SharedExpensePaymentInline`: Django Admin no
+    soporta inlines anidados a más de un nivel."""
+
+    list_display = ("shared_expense", "display_name", "is_owner", "is_payer", "amount_assigned", "amount_paid")
+    list_filter = ("is_owner", "is_payer")
+    inlines = [SharedExpensePaymentInline]
+
+
+class SharedExpenseParticipantInline(admin.TabularInline):
+    model = SharedExpenseParticipant
+    extra = 0
+
+
+@admin.register(SharedExpense)
+class SharedExpenseAdmin(admin.ModelAdmin):
+    list_display = ("name", "user", "split_method", "created_at")
+    list_filter = ("split_method",)
+    search_fields = ("name", "user__email")
+    inlines = [SharedExpenseParticipantInline]
 
 
 @admin.register(Attachment)
