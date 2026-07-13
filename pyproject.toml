@@ -1,0 +1,17 @@
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+exclude = ["migrations", ".venv", "venv"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+skip = ["migrations", ".venv", "venv"]
+known_django = ["django"]
+known_first_party = ["core", "fintrack"]
+sections = ["FUTURE", "STDLIB", "DJANGO", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "fintrack.settings"
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

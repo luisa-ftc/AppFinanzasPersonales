@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Registro · FinTrack{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+    <h1>Crear cuenta</h1>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit" class="btn btn-primary btn-block">Registrarse</button>
+    </form>
+    <p class="auth-links"><a href="{% url 'core:login' %}">¿Ya tienes cuenta? Inicia sesión</a></p>
+</div>
+{% endblock %}

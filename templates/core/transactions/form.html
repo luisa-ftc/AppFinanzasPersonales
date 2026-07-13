@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}{% if object %}Editar{% else %}Nueva{% endif %} transacción · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>{% if object %}Editar transacción{% else %}Nueva transacción{% endif %}</h1>
+    <form method="post">
+        {% csrf_token %}
+
+        <div class="form-field">
+            {{ form.transaction_type.label_tag }}
+            {{ form.transaction_type }}
+            {{ form.transaction_type.errors }}
+        </div>
+
+        <div class="form-field" id="category-field">
+            {{ form.category.label_tag }}
+            <select name="category" id="id_category">
+                <option value="">---------</option>
+                {% for cat in form.fields.category.queryset %}
+                <option value="{{ cat.pk }}" data-category-type="{{ cat.category_type }}" {% if form.category.value|stringformat:"s" == cat.pk|stringformat:"s" %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
+            </select>
+            {{ form.category.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.account.label_tag }}
+            {{ form.account }}
+            {{ form.account.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.amount.label_tag }}
+            {{ form.amount }}
+            {{ form.amount.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.description.label_tag }}
+            {{ form.description }}
+            {{ form.description.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.date.label_tag }}
+            {{ form.date }}
+            {{ form.date.errors }}
+        </div>
+
+        <div class="form-field hidden" id="transfer-account-field">
+            {{ form.transfer_to_account.label_tag }}
+            {{ form.transfer_to_account }}
+            {{ form.transfer_to_account.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.tags.label_tag }}
+            {{ form.tags }}
+            {{ form.tags.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.notes.label_tag }}
+            {{ form.notes }}
+            {{ form.notes.errors }}
+            {% if form.notes.help_text %}<p class="help-text">{{ form.notes.help_text }}</p>{% endif %}
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Guardar</button>
+            <a href="{% url 'core:transaction_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+
+    {% if object %}
+    <hr>
+    <h3>Adjuntos</h3>
+    <ul>
+        {% for att in object.attachments.all %}
+        <li><a href="{{ att.file.url }}">{{ att.original_filename }}</a> ({{ att.size }} bytes)</li>
+        {% empty %}
+        <li>Sin adjuntos</li>
+        {% endfor %}
+    </ul>
+    <form method="post" action="{% url 'core:transaction_attach' object.pk %}" enctype="multipart/form-data">
+        {% csrf_token %}
+        <input type="file" name="file" required>
+        <button type="submit" class="btn btn-sm">Subir adjunto</button>
+    </form>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const typeSelect = document.getElementById('id_transaction_type');
+    const categoryField = document.getElementById('category-field');
+    const categorySelect = document.getElementById('id_category');
+    const transferField = document.getElementById('transfer-account-field');
+
+    if (!typeSelect || !categorySelect) {
+        return;
+    }
+
+    const allOptions = Array.from(categorySelect.options).map((option) => ({
+        value: option.value,
+        text: option.textContent,
+        categoryType: option.dataset.categoryType || '',
+    }));
+
+    function applyFilters() {
+        const type = typeSelect.value;
+
+        if (type === 'transfer') {
+            if (categoryField) {
+                categoryField.classList.add('hidden');
+            }
+            categorySelect.value = '';
+        } else {
+            if (categoryField) {
+                categoryField.classList.remove('hidden');
+            }
+            const previousValue = categorySelect.value;
+            categorySelect.innerHTML = '';
+            allOptions.forEach((opt) => {
+                if (opt.value === '' || !type || opt.categoryType === type) {
+                    const option = document.createElement('option');
+                    option.value = opt.value;
+                    option.textContent = opt.text;
+                    categorySelect.appendChild(option);
+                }
+            });
+            if (Array.from(categorySelect.options).some((o) => o.value === previousValue)) {
+                categorySelect.value = previousValue;
+            }
+        }
+
+        if (transferField) {
+            if (type === 'transfer') {
+                transferField.classList.remove('hidden');
+            } else {
+                transferField.classList.add('hidden');
+            }
+        }
+    }
+
+    typeSelect.addEventListener('change', applyFilters);
+    applyFilters();
+})();
+</script>
+{% endblock %}

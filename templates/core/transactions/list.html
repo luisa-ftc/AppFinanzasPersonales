@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Transacciones · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Transacciones</h1>
+    <div class="btn-group">
+        <a href="{% url 'core:transaction_create' %}" class="btn btn-primary">Nueva</a>
+        <a href="{% url 'core:csv_import' %}" class="btn">Importar CSV</a>
+        <a href="{% url 'core:csv_export' %}" class="btn">Exportar CSV</a>
+        <a href="{% url 'core:pdf_report' %}" class="btn">Reporte PDF</a>
+    </div>
+</div>
+
+<div class="card filter-card">
+    <form method="get" class="filter-form">
+        {{ filter_form.as_p }}
+        <button type="submit" class="btn btn-sm">Filtrar</button>
+        <a href="{% url 'core:transaction_list' %}" class="btn btn-sm">Limpiar</a>
+    </form>
+</div>
+
+<table class="table">
+    <thead>
+        <tr>
+            <th>Fecha</th>
+            <th>Descripción</th>
+            <th>Cuenta</th>
+            <th>Categoría</th>
+            <th>Tipo</th>
+            <th class="text-right">Monto</th>
+            <th>Conciliada</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for tx in transactions %}
+        <tr>
+            <td>{{ tx.date }}</td>
+            <td>{{ tx.description }}</td>
+            <td>{{ tx.account.name }}</td>
+            <td>{{ tx.category.name|default:"—" }}</td>
+            <td><span class="badge badge-{{ tx.transaction_type }}">{{ tx.get_transaction_type_display }}</span></td>
+            <td class="text-right">${{ tx.amount_display }}</td>
+            <td>
+                {% if tx.is_reconciled %}
+                <span class="badge badge-success">Sí</span>
+                {% else %}
+                <form method="post" action="{% url 'core:transaction_reconcile' tx.pk %}" class="inline-form">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm">Conciliar</button>
+                </form>
+                {% endif %}
+            </td>
+            <td class="actions">
+                <a href="{% url 'core:transaction_update' tx.pk %}">Editar</a>
+                <a href="{% url 'core:transaction_delete' tx.pk %}" class="text-danger">Eliminar</a>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8">No hay transacciones.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if is_paginated %}
+<div class="pagination">
+    {% if page_obj.has_previous %}
+    <a href="?page={{ page_obj.previous_page_number }}" class="btn btn-sm">Anterior</a>
+    {% endif %}
+    <span>Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}</span>
+    {% if page_obj.has_next %}
+    <a href="?page={{ page_obj.next_page_number }}" class="btn btn-sm">Siguiente</a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

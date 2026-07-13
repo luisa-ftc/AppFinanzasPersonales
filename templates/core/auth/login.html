@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Iniciar sesión · FinTrack{% endblock %}
+
+{% block content %}
+<div class="auth-card">
+    <h1>FinTrack</h1>
+    <p class="subtitle">Gestión financiera personal</p>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit" class="btn btn-primary btn-block">Iniciar sesión</button>
+    </form>
+    <p class="auth-links">
+        <a href="{% url 'core:password_reset' %}">¿Olvidaste tu contraseña?</a><br>
+        <a href="{% url 'core:register' %}">Crear cuenta</a>
+    </p>
+</div>
+{% endblock %}

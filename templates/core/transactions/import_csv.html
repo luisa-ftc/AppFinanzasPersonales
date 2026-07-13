@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Importar CSV · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>Importar transacciones CSV</h1>
+    <p>Columnas esperadas: date, account, category, transaction_type, amount, description, notes</p>
+    <p>Los duplicados se detectan automáticamente por hash (fecha + monto + descripción + cuenta).</p>
+
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit" class="btn btn-primary">Importar</button>
+        <a href="{% url 'core:transaction_list' %}" class="btn">Cancelar</a>
+    </form>
+
+    {% if result %}
+    <div class="import-result">
+        <h3>Resultado</h3>
+        <p>Creadas: {{ result.created }}</p>
+        <p>Duplicados omitidos: {{ result.skipped_duplicates }}</p>
+        {% if result.errors %}
+        <h4>Errores</h4>
+        <ul>
+            {% for error in result.errors %}
+            <li>{{ error }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

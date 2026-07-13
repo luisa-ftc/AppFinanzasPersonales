@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{% if object %}Editar{% else %}Nuevo{% endif %} presupuesto · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>{% if object %}Editar presupuesto{% else %}Nuevo presupuesto{% endif %}</h1>
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Guardar</button>
+            <a href="{% url 'core:budget_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

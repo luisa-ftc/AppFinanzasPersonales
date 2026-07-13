@@ -1,0 +1,127 @@
+[
+  {
+    "model": "core.user",
+    "pk": 1,
+    "fields": {
+      "password": "pbkdf2_sha256$720000$demo000000000000000000000000000000$demoHashPlaceholder=",
+      "last_login": null,
+      "is_superuser": true,
+      "username": "admin",
+      "first_name": "Admin",
+      "last_name": "FinTrack",
+      "email": "admin@fintrack.local",
+      "is_staff": true,
+      "is_active": true,
+      "date_joined": "2026-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "core.user",
+    "pk": 2,
+    "fields": {
+      "password": "pbkdf2_sha256$720000$demo000000000000000000000000000000$demoHashPlaceholder=",
+      "last_login": null,
+      "is_superuser": false,
+      "username": "demo",
+      "first_name": "Usuario",
+      "last_name": "Demo",
+      "email": "demo@fintrack.local",
+      "is_staff": false,
+      "is_active": true,
+      "date_joined": "2026-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "core.account",
+    "pk": 1,
+    "fields": {
+      "user": 2,
+      "name": "Cuenta Principal",
+      "account_type": "checking",
+      "currency": "MXN",
+      "initial_balance": "5000.00",
+      "is_active": true,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "core.account",
+    "pk": 2,
+    "fields": {
+      "user": 2,
+      "name": "Ahorros",
+      "account_type": "savings",
+      "currency": "MXN",
+      "initial_balance": "10000.00",
+      "is_active": true,
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "core.category",
+    "pk": 1,
+    "fields": {
+      "user": 2,
+      "name": "Salario",
+      "category_type": "income",
+      "color": "#22c55e",
+      "icon": "",
+      "parent": null,
+      "is_active": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "core.category",
+    "pk": 2,
+    "fields": {
+      "user": 2,
+      "name": "Comida",
+      "category_type": "expense",
+      "color": "#ef4444",
+      "icon": "",
+      "parent": null,
+      "is_active": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "core.category",
+    "pk": 3,
+    "fields": {
+      "user": 2,
+      "name": "Transporte",
+      "category_type": "expense",
+      "color": "#f59e0b",
+      "icon": "",
+      "parent": null,
+      "is_active": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "core.tag",
+    "pk": 1,
+    "fields": {
+      "user": 2,
+      "name": "recurrente",
+      "color": "#6366f1"
+    }
+  },
+  {
+    "model": "core.budget",
+    "pk": 1,
+    "fields": {
+      "user": 2,
+      "category": 2,
+      "amount": "2000.00",
+      "period_start": "2026-01-01",
+      "period_end": "2026-01-31",
+      "notes": "Presupuesto mensual de comida",
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-01T00:00:00Z"
+    }
+  }
+]

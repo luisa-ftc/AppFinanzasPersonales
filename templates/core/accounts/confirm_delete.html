@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Eliminar cuenta · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>¿Eliminar cuenta "{{ object.name }}"?</h1>
+    <p>Esta acción no se puede deshacer.</p>
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Eliminar</button>
+        <a href="{% url 'core:account_list' %}" class="btn">Cancelar</a>
+    </form>
+</div>
+{% endblock %}

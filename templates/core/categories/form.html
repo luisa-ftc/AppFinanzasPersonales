@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}{% if object %}Editar{% else %}Nueva{% endif %} categoría · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>{% if object %}Editar categoría{% else %}Nueva categoría{% endif %}</h1>
+    <form method="post" class="styled-form">
+        {% csrf_token %}
+        <div class="color-picker-panel">
+            <div class="color-preset-row">
+                <button type="button" class="color-swatch" data-color="#6366f1" style="background:#6366f1" aria-label="Violeta"></button>
+                <button type="button" class="color-swatch" data-color="#ec4899" style="background:#ec4899" aria-label="Rosa"></button>
+                <button type="button" class="color-swatch" data-color="#f59e0b" style="background:#f59e0b" aria-label="Ámbar"></button>
+                <button type="button" class="color-swatch" data-color="#10b981" style="background:#10b981" aria-label="Verde"></button>
+                <button type="button" class="color-swatch" data-color="#3b82f6" style="background:#3b82f6" aria-label="Azul"></button>
+                <button type="button" class="color-swatch" data-color="#8b5cf6" style="background:#8b5cf6" aria-label="Morado"></button>
+            </div>
+            <div class="color-picker-inline">
+                {{ form.color }}
+                <div class="color-preview" id="color-preview"></div>
+            </div>
+            {{ form.color.errors }}
+            {% if form.color.help_text %}<p class="help-text">{{ form.color.help_text }}</p>{% endif %}
+        </div>
+        {% for field in form.visible_fields %}
+            {% if field.name != "color" %}
+                <div class="form-field">
+                    {{ field.label_tag }}
+                    {% if field.name == "icon" %}
+                        <div class="icon-picker-panel">
+                            <div class="icon-preset-row">
+                                <button type="button" class="icon-swatch" data-icon="🛒">🛒</button>
+                                <button type="button" class="icon-swatch" data-icon="🍽️">🍽️</button>
+                                <button type="button" class="icon-swatch" data-icon="🚗">🚗</button>
+                                <button type="button" class="icon-swatch" data-icon="🏠">🏠</button>
+                                <button type="button" class="icon-swatch" data-icon="💼">💼</button>
+                                <button type="button" class="icon-swatch" data-icon="🎯">🎯</button>
+                            </div>
+                            {{ field }}
+                        </div>
+                    {% else %}
+                        {{ field }}
+                    {% endif %}
+                    {{ field.errors }}
+                    {% if field.help_text %}<p class="help-text">{{ field.help_text }}</p>{% endif %}
+                </div>
+            {% endif %}
+        {% endfor %}
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Guardar</button>
+            <a href="{% url 'core:category_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const input = document.getElementById('id_color');
+    const preview = document.getElementById('color-preview');
+    const swatches = document.querySelectorAll('.color-swatch');
+    const iconInput = document.getElementById('id_icon');
+    const iconButtons = document.querySelectorAll('.icon-swatch');
+
+    if (input) {
+        const syncColor = () => {
+            const value = input.value || '#6366f1';
+            input.value = value;
+            if (preview) {
+                preview.style.background = value;
+            }
+        };
+
+        input.addEventListener('input', syncColor);
+        input.addEventListener('change', syncColor);
+        swatches.forEach((button) => {
+            button.addEventListener('click', () => {
+                input.value = button.dataset.color;
+                syncColor();
+            });
+        });
+
+        syncColor();
+    }
+
+    if (iconInput) {
+        iconButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                iconInput.value = button.dataset.icon;
+            });
+        });
+    }
+})();
+</script>
+{% endblock %}

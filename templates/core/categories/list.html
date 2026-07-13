@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Categorías · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Categorías</h1>
+    <a href="{% url 'core:category_create' %}" class="btn btn-primary">Nueva categoría</a>
+</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Nombre</th>
+            <th>Tipo</th>
+            <th>Color</th>
+            <th>Estado</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for category in categories %}
+        <tr>
+            <td>
+                <span class="category-name-cell">
+                    <span class="category-icon">{{ category.icon|default:'📁' }}</span>
+                    <span>{{ category.name }}</span>
+                </span>
+            </td>
+            <td>{{ category.get_category_type_display }}</td>
+            <td><span class="color-dot" style="background:{{ category.color }}"></span> {{ category.color }}</td>
+            <td>{% if category.is_active %}Activa{% else %}Inactiva{% endif %}</td>
+            <td class="actions">
+                <a href="{% url 'core:category_update' category.pk %}">Editar</a>
+                <a href="{% url 'core:category_delete' category.pk %}" class="text-danger">Eliminar</a>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">No hay categorías.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

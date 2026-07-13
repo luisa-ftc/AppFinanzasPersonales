@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Eliminar transacción · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>¿Eliminar transacción?</h1>
+    <p>{{ object.date }} — {{ object.description }} (${{ object.amount_display }})</p>
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Eliminar</button>
+        <a href="{% url 'core:transaction_list' %}" class="btn">Cancelar</a>
+    </form>
+</div>
+{% endblock %}
