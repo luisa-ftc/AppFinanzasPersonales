@@ -9,6 +9,7 @@ from core.models import (
     Attachment,
     Budget,
     Category,
+    Debt,
     Tag,
     Transaction,
     User,
@@ -86,6 +87,13 @@ class BudgetAdmin(admin.ModelAdmin):
     list_display = ("category", "user", "amount", "period_start", "period_end")
     list_filter = ("period_start",)
     search_fields = ("category__name", "user__email")
+
+
+@admin.register(Debt)
+class DebtAdmin(admin.ModelAdmin):
+    list_display = ("nombre", "user", "prestamista", "monto_requerido", "monto_pagado", "fecha_limite")
+    list_filter = ("fecha_limite",)
+    search_fields = ("nombre", "prestamista", "user__email")
 
 
 @admin.register(Attachment)

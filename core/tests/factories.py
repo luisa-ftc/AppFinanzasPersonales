@@ -8,7 +8,7 @@ prueba nunca quede asociada a una cuenta o categoría de otro usuario.
 import factory
 from decimal import Decimal
 
-from core.models import Account, AccountCreditCardDetails, Category, Transaction, User
+from core.models import Account, AccountCreditCardDetails, Category, Debt, Transaction, User
 
 
 class UserFactory(factory.django.DjangoModelFactory):
@@ -54,6 +54,18 @@ class CategoryFactory(factory.django.DjangoModelFactory):
     user = factory.SubFactory(UserFactory)
     name = factory.Sequence(lambda n: f"Categoría {n}")
     category_type = "expense"
+
+
+class DebtFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = Debt
+
+    user = factory.SubFactory(UserFactory)
+    nombre = factory.Sequence(lambda n: f"Deuda {n}")
+    prestamista = "Prestamista Test"
+    monto_requerido = Decimal("1000.00")
+    monto_pagado = Decimal("0.00")
+    fecha_limite = "2026-12-31"
 
 
 class TransactionFactory(factory.django.DjangoModelFactory):

@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FinTrack es una app de gestión financiera personal construida con Django 4.x + Django REST Framework. Expone el mismo modelo de dominio a través de dos interfaces paralelas: una interfaz web clásica renderizada por el servidor (vistas basadas en clases + templates de Django) y una API REST (ViewSets de DRF + JWT opcional), ambas apoyadas en una misma capa de servicios. Todo el código de la app vive en una única app de Django, `core`; `fintrack/` es solo la configuración a nivel de proyecto (settings/urls/wsgi/asgi).
 
+Módulos de negocio (mismo nivel en la nav web y en el router de la API): Dashboard, Cuentas, Categorías, Presupuestos, **Deudas**, Transacciones.
+
 ## Comandos
 
 El entorno es un `.venv` local (Python 3.11+). En Windows, actívalo con `.\.venv\Scripts\Activate.ps1`; en Linux/macOS, `source .venv/bin/activate`.
@@ -51,7 +53,7 @@ No existe un manager/queryset personalizado que acote automáticamente por usuar
 - Serializers: varios métodos `__init__` reacotan los querysets relacionados (cuenta/categoría/etiquetas) al usuario de la petición (ej. `TransactionSerializer.__init__`, `BudgetSerializer.__init__`) para que un usuario no pueda asociar la cuenta/categoría de otro usuario vía la API.
 - Los servicios que tocan datos de usuarios reciben siempre un argumento `user` explícito (`core/services/csv_io.py`, `core/services/reports.py`) en vez de depender de un acotamiento ambiental.
 
-Al agregar un nuevo modelo/endpoint que pertenezca a un usuario, hay que replicar el tratamiento en los cuatro puntos anteriores — no hay un atajo centralizado.
+Al agregar un nuevo modelo/endpoint que pertenezca a un usuario, hay que replicar el tratamiento en los cuatro puntos anteriores — no hay un atajo centralizado. `Debt` (deudas) sigue exactamente este patrón: `UserOwnedMixin` en las 5 vistas web (`DebtListView/CreateView/UpdateView/DeleteView/DetailView`), `UserOwnedViewSet` en `DebtViewSet`, y `TransactionForm`/`TransactionSerializer` reacotan `self.fields["debt"].queryset` al usuario en su `__init__`.
 
 ### Los saldos y el avance de presupuesto siempre se derivan, nunca se almacenan
 
@@ -60,6 +62,27 @@ Al agregar un nuevo modelo/endpoint que pertenezca a un usuario, hay que replica
 ### Detección de transacciones duplicadas vía hash de contenido
 
 `Transaction.content_hash` (SHA-256 de `user|account|date|amount|description.strip().lower()`, ver `Transaction.compute_hash`) se recalcula en cada `save()`. `core/services/csv_io.py:import_transactions_csv` usa este hash para omitir filas ya importadas, lo cual hace idempotentes tanto el cargador de datos demo (`core/management/commands/setup_demo.py`) como las reimportaciones de CSV. Si cambias qué campos identifican una transacción como "duplicada", actualiza `compute_hash` y ten en cuenta que eso cambia los hashes de todas las filas existentes (no hay ninguna migración que los recalcule).
+
+### Cuentas de tarjeta de crédito: modelo de detalle separado, no campos en `Account`
+
+`Account.account_type == "credit"` puede tener un `AccountCreditCardDetails` asociado (`OneToOneField` a `Account`, con `credit_limit`, `statement_day`, `payment_due_day`). Es el patrón a replicar para futuros tipos de cuenta con campos propios (ej. `AccountInvestmentDetails`): un modelo de detalle aparte, nunca agregando campos condicionales a `Account`. `AccountCreditCardDetails.clean()` valida que solo pueda asociarse a una cuenta de tipo `CREDIT`.
+
+Los cálculos de crédito usado/disponible y próximas fechas de corte/pago viven en `core/services/credit_cards.py` y son **independientes** de `calculate_account_balance` (`core/services/accounts.py`): en una cuenta normal un gasto *resta* saldo, pero en una tarjeta un gasto *aumenta* la deuda y un pago (transferencia entrante) la *reduce* — es la relación de signos invertida. `AccountSerializer` y las vistas de cuentas exponen `used_credit`/`available_credit`/`next_statement_date`/`next_payment_due_date` como campos calculados solo cuando `account_type == CREDIT` y existe el detalle; en cualquier otro caso son `None`.
+
+### Módulo de Deudas: integrado con Transacciones vía llamadas explícitas de servicio, no señales
+
+`Debt` (`core/models.py`) registra un préstamo con `monto_requerido`, `monto_pagado` (`monto_pendiente` y `estado` — pendiente/pagada/vencida — son `@property` derivadas, igual que los saldos de cuentas). `Transaction.debt` es un FK opcional (`on_delete=SET_NULL`, para conservar el historial de transacciones si se borra la deuda).
+
+Cuando una transacción tiene `debt` asignada:
+- `income` → suma a `monto_requerido` de la deuda (el usuario recibió más dinero prestado).
+- `expense` → suma a `monto_pagado` (el usuario abonó a la deuda); se valida contra `monto_pendiente` antes de guardar (`validate_expense_against_debt`, llamada desde `TransactionForm.clean()` y `TransactionSerializer`) para no permitir sobrepagos.
+- `transfer` → no afecta ninguna deuda.
+
+Esta lógica vive en `core/services/debts.py` (`apply_transaction_to_debt`, `revert_transaction_from_debt`, `validate_expense_against_debt`, `get_debt_transaction_history`) y se invoca **explícitamente** desde las vistas/ViewSets de Transaction (`TransactionCreateView/UpdateView/DeleteView` en `core/views.py`, `TransactionViewSet.perform_create/update/destroy` en `core/api/views.py`) envuelta en `db_transaction.atomic()` — nunca desde `Transaction.save()` ni señales, para no acoplar esa lógica al guardado genérico de transacciones (que ya tiene su propio cálculo de `content_hash`). Al editar o eliminar una transacción con deuda asociada, siempre se revierte el efecto de la versión anterior antes de aplicar el nuevo, para que los montos de la deuda no queden desincronizados.
+
+### Gotcha: montos en `style="width:...%"` deben renderizarse sin localización
+
+Los templates que dibujan una barra de progreso (`budgets/list.html`, `debts/list.html`, `debts/detail.html`) inyectan un `Decimal` calculado (`percent_used`, `percent_paid`) directamente en un atributo `style`. Con `USE_L10N`/locale español activo, Django renderiza esos decimales con coma (`48,500%`), lo cual es un valor CSS inválido y hace que la barra se vea con un ancho incorrecto (llena o casi vacía sin relación con el porcentaje real). La corrección es envolver **solo esa interpolación** con `{% load l10n %}` + `{% localize off %}...{% endlocalize %}` para forzar el punto decimal, dejando el `{{ valor|floatformat:0 }}%` de texto visible (fuera del atributo `style`) con la localización normal. Si se agrega una nueva barra de progreso u otro valor numérico dentro de un atributo `style`/`data-*` consumido por CSS/JS, hay que aplicar el mismo `{% localize off %}` ahí.
 
 ### Modelo de autenticación: email como username
 
@@ -75,8 +98,9 @@ Al agregar un nuevo modelo/endpoint que pertenezca a un usuario, hay que replica
 ### Estructura de rutas
 
 - `fintrack/urls.py` monta: `/admin/`, `core.urls` en `/` (interfaz web), `core.api.urls` en `/api/` (REST), además del schema/Swagger/Redoc de drf-spectacular bajo `/api/schema/`, `/api/docs/`, `/api/redoc/`.
-- `core/api/urls.py` usa un `DefaultRouter` de DRF para los cinco ViewSets (cuentas, categorías, etiquetas, presupuestos, transacciones) más rutas explícitas para registro/perfil/dashboard/reporte-pdf y (condicionalmente) JWT.
-- Las `@action` personalizadas en `TransactionViewSet` (`core/api/views.py`) exponen `reconcile`, `unreconcile`, `upload_attachment`, `export_csv`, `import_csv` como subrutas, replicando las vistas web equivalentes en `core/urls.py`.
+- `core/api/urls.py` usa un `DefaultRouter` de DRF para los seis ViewSets (cuentas, categorías, etiquetas, presupuestos, **deudas**, transacciones) más rutas explícitas para registro/perfil/dashboard/reporte-pdf y (condicionalmente) JWT.
+- `core/urls.py` (web) sigue el mismo patrón de 5 rutas por módulo CRUD (`list`/`create`/`detail`/`update`/`delete`) para cuentas, categorías, presupuestos y deudas (`debts/`, `debts/new/`, `debts/<int:pk>/`, `debts/<int:pk>/edit/`, `debts/<int:pk>/delete/`).
+- Las `@action` personalizadas en `TransactionViewSet` (`core/api/views.py`) exponen `reconcile`, `unreconcile`, `upload_attachment`, `export_csv`, `import_csv` como subrutas, replicando las vistas web equivalentes en `core/urls.py`. `DebtViewSet` expone `@action(detail=True) transactions` para listar el historial de transacciones de una deuda (equivalente al contexto que arma `DebtDetailView` para la web).
 
 ### Formato de import/export CSV
 

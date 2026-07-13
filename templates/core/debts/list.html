@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% load l10n %}
+{% block title %}Deudas · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Deudas</h1>
+    <a href="{% url 'core:debt_create' %}" class="btn btn-primary">Nueva deuda</a>
+</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Nombre</th>
+            <th>Prestamista</th>
+            <th class="text-right">Monto Requerido</th>
+            <th class="text-right">Pagado</th>
+            <th class="text-right">Pendiente</th>
+            <th>Estado</th>
+            <th>Progreso</th>
+            <th>Fecha Limite</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for debt in debts %}
+        <tr>
+            <td><a href="{% url 'core:debt_detail' debt.pk %}">{{ debt.nombre }}</a></td>
+            <td>{{ debt.prestamista }}</td>
+            <td class="text-right">${{ debt.monto_requerido_display }}</td>
+            <td class="text-right">${{ debt.monto_pagado_display }}</td>
+            <td class="text-right">${{ debt.monto_pendiente_display }}</td>
+            <td>
+                {% if debt.estado == "pagada" %}
+                <span class="badge badge-success">Pagada</span>
+                {% elif debt.estado == "vencida" %}
+                <span class="badge badge-danger">Vencida</span>
+                {% else %}
+                <span class="badge badge-warning">Pendiente</span>
+                {% endif %}
+            </td>
+            <td>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:{% localize off %}{{ debt.percent_paid }}{% endlocalize %}%"></div>
+                </div>
+                {{ debt.percent_paid|floatformat:0 }}%
+            </td>
+            <td>{{ debt.fecha_limite }}</td>
+            <td class="actions">
+                <a href="{% url 'core:debt_update' debt.pk %}">Editar</a>
+                <a href="{% url 'core:debt_delete' debt.pk %}" class="text-danger">Eliminar</a>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="9">No hay deudas registradas.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

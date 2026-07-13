@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Eliminar deuda · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>Eliminar deuda</h1>
+    <p>¿Estás seguro de que deseas eliminar la deuda <strong>{{ object.nombre }}</strong> ({{ object.prestamista }})?</p>
+    <form method="post">
+        {% csrf_token %}
+        <div class="form-actions">
+            <button type="submit" class="btn btn-danger">Eliminar</button>
+            <a href="{% url 'core:debt_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

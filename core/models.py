@@ -1,10 +1,10 @@
 """Modelos de dominio de FinTrack.
 
 Define al usuario (autenticado por email) y las entidades financieras que
-dependen de él: cuentas, categorías, etiquetas, transacciones, presupuestos
-y adjuntos. Cada entidad de dominio pertenece a un único usuario mediante una
-FK a `settings.AUTH_USER_MODEL`; el aislamiento entre usuarios se aplica en
-las capas de vistas/API, no aquí.
+dependen de él: cuentas, categorías, etiquetas, transacciones, presupuestos,
+deudas y adjuntos. Cada entidad de dominio pertenece a un único usuario
+mediante una FK a `settings.AUTH_USER_MODEL`; el aislamiento entre usuarios
+se aplica en las capas de vistas/API, no aquí.
 """
 
 import hashlib
@@ -252,6 +252,14 @@ class Transaction(models.Model):
         blank=True,
         related_name="incoming_transfers",
     )
+    debt = models.ForeignKey(
+        "Debt",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="transactions",
+        verbose_name="deuda asociada",
+    )
     tags = models.ManyToManyField(Tag, blank=True, related_name="transactions")
     content_hash = models.CharField(
         "hash",
@@ -367,6 +375,77 @@ class Budget(models.Model):
         if self.amount == 0:
             return Decimal("0")
         return min((self.spent / self.amount) * 100, Decimal("100"))
+
+
+class Debt(models.Model):
+    """Deuda o préstamo de un usuario, con seguimiento de pagos vía transacciones."""
+
+    class DebtStatus(models.TextChoices):
+        PENDIENTE = "pendiente", "Pendiente"
+        PAGADA = "pagada", "Pagada"
+        VENCIDA = "vencida", "Vencida"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="debts",
+    )
+    nombre = models.CharField("nombre", max_length=100)
+    prestamista = models.CharField("prestamista", max_length=150)
+    monto_requerido = models.DecimalField(
+        "monto requerido",
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    monto_pagado = models.DecimalField(
+        "monto pagado",
+        max_digits=14,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    fecha_limite = models.DateField("fecha límite")
+    observaciones = models.TextField("observaciones", blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "deuda"
+        verbose_name_plural = "deudas"
+        ordering = ["-fecha_limite"]
+        unique_together = [["user", "nombre"]]
+
+    def __str__(self):
+        return f"{self.nombre} ({self.prestamista})"
+
+    @property
+    def monto_pendiente(self):
+        """Saldo que aún falta pagar (calculado, no persistido)."""
+        return self.monto_requerido - self.monto_pagado
+
+    @property
+    def estado(self):
+        """Estado derivado de la deuda: pagada si no queda saldo, vencida si pasó la fecha límite, si no pendiente."""
+        if self.monto_pendiente <= 0:
+            return self.DebtStatus.PAGADA
+        if self.fecha_limite < timezone.now().date():
+            return self.DebtStatus.VENCIDA
+        return self.DebtStatus.PENDIENTE
+
+    @property
+    def estado_display(self):
+        """Etiqueta legible del estado derivado (para templates)."""
+        return self.DebtStatus(self.estado).label
+
+    @property
+    def percent_paid(self):
+        """Porcentaje pagado de la deuda, acotado a 100."""
+        if self.monto_requerido == 0:
+            return Decimal("0")
+        return min(
+            (self.monto_pagado / self.monto_requerido) * 100, Decimal("100")
+        )
 
 
 def attachment_upload_path(instance, filename):

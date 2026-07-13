@@ -498,17 +498,18 @@ h2 { font-size: 1.12rem; margin-bottom: 0.75rem; }
     background: var(--border);
     border-radius: 4px;
     height: 8px;
-    width: 80px;
+    width: 120px;
     display: inline-block;
     vertical-align: middle;
     margin-right: 0.5rem;
+    overflow: hidden;
 }
 
 .progress-fill {
     background: linear-gradient(90deg, var(--primary) 0%, #8b5cf6 100%);
     height: 100%;
-    border-radius: 4px;
     max-width: 100%;
+    transition: width 0.3s ease;
 }
 
 .auth-card {

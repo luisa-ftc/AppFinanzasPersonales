@@ -1,9 +1,9 @@
 """Vistas web clásicas (basadas en clases) de FinTrack.
 
 Cubren autenticación, dashboard, CRUD de cuentas/categorías/presupuestos/
-transacciones, conciliación, import/export CSV, reporte PDF y subida de
-adjuntos. Toda la lógica de negocio (saldos, gasto de presupuestos, CSV,
-reportes) se delega en `core.services`; estas vistas solo orquestan
+transacciones/deudas, conciliación, import/export CSV, reporte PDF y subida
+de adjuntos. Toda la lógica de negocio (saldos, gasto de presupuestos, CSV,
+reportes, deudas) se delega en `core.services`; estas vistas solo orquestan
 peticiones HTTP y aíslan los datos por usuario autenticado.
 """
 
@@ -34,12 +34,18 @@ from core.forms import (
     BudgetForm,
     CategoryForm,
     CSVImportForm,
+    DebtForm,
     LoginForm,
     RegisterForm,
     TransactionFilterForm,
     TransactionForm,
 )
-from core.models import Account, AccountCreditCardDetails, Attachment, Budget, Category, Transaction
+from core.models import Account, AccountCreditCardDetails, Attachment, Budget, Category, Debt, Transaction
+from core.services.debts import (
+    apply_transaction_to_debt,
+    get_debt_transaction_history,
+    revert_transaction_from_debt,
+)
 from core.services.accounts import calculate_account_balance, get_balances_by_currency, get_user_total_balance
 from core.services.credit_cards import (
     get_available_credit,
@@ -378,6 +384,78 @@ class BudgetDeleteView(UserOwnedMixin, DeleteView):
     success_url = reverse_lazy("core:budget_list")
 
 
+class DebtListView(UserOwnedMixin, ListView):
+    """Lista de deudas del usuario autenticado, con montos formateados para mostrar."""
+
+    model = Debt
+    template_name = "core/debts/list.html"
+    context_object_name = "debts"
+
+    def get_context_data(self, **kwargs):
+        """Agrega los montos formateados de cada deuda para mostrarlos en la tabla."""
+        ctx = super().get_context_data(**kwargs)
+        for debt in ctx.get("debts", []):
+            debt.monto_requerido_display = format_money_display(debt.monto_requerido)
+            debt.monto_pagado_display = format_money_display(debt.monto_pagado)
+            debt.monto_pendiente_display = format_money_display(debt.monto_pendiente)
+        return ctx
+
+
+class DebtCreateView(UserOwnedMixin, SuccessMessageMixin, CreateView):
+    """Creación de una deuda para el usuario autenticado."""
+
+    model = Debt
+    form_class = DebtForm
+    template_name = "core/debts/form.html"
+    success_url = reverse_lazy("core:debt_list")
+    success_message = "Deuda registrada."
+
+    def form_valid(self, form):
+        """Asigna el usuario autenticado como dueño de la deuda antes de guardar."""
+        form.instance.user = self.request.user
+        return super().form_valid(form)
+
+
+class DebtUpdateView(UserOwnedMixin, SuccessMessageMixin, UpdateView):
+    """Edición de una deuda existente del usuario autenticado."""
+
+    model = Debt
+    form_class = DebtForm
+    template_name = "core/debts/form.html"
+    success_url = reverse_lazy("core:debt_list")
+    success_message = "Deuda actualizada."
+
+
+class DebtDeleteView(UserOwnedMixin, DeleteView):
+    """Eliminación de una deuda del usuario autenticado (las transacciones asociadas
+    conservan su historial vía `SET_NULL` en `Transaction.debt`)."""
+
+    model = Debt
+    template_name = "core/debts/confirm_delete.html"
+    success_url = reverse_lazy("core:debt_list")
+
+
+class DebtDetailView(UserOwnedMixin, DetailView):
+    """Detalle de una deuda con su historial de transacciones asociadas."""
+
+    model = Debt
+    template_name = "core/debts/detail.html"
+    context_object_name = "debt"
+
+    def get_context_data(self, **kwargs):
+        """Agrega montos formateados de la deuda y su historial de transacciones asociadas."""
+        ctx = super().get_context_data(**kwargs)
+        debt = self.object
+        debt.monto_requerido_display = format_money_display(debt.monto_requerido)
+        debt.monto_pagado_display = format_money_display(debt.monto_pagado)
+        debt.monto_pendiente_display = format_money_display(debt.monto_pendiente)
+        transactions = get_debt_transaction_history(debt)
+        for tx in transactions:
+            tx.amount_display = format_money_display(tx.amount)
+        ctx["transactions"] = transactions
+        return ctx
+
+
 class TransactionListView(UserOwnedMixin, ListView):
     """Lista paginada de transacciones del usuario, filtrable por `TransactionFilterForm`."""
 
@@ -433,13 +511,16 @@ class TransactionCreateView(UserOwnedMixin, SuccessMessageMixin, CreateView):
     success_message = "Transacción registrada."
 
     def get_form(self, form_class=None):
-        """Instancia `TransactionForm` con el usuario para acotar sus querysets."""
+        """Instancia el formulario acotado al usuario autenticado."""
         return TransactionForm(self.request.user, **self.get_form_kwargs())
 
     def form_valid(self, form):
-        """Asigna el usuario autenticado como dueño de la transacción antes de guardar."""
+        """Guarda la transacción y aplica su efecto sobre la deuda asociada, todo en una transacción de BD."""
         form.instance.user = self.request.user
-        return super().form_valid(form)
+        with db_transaction.atomic():
+            response = super().form_valid(form)
+            apply_transaction_to_debt(self.object)
+        return response
 
 
 class TransactionUpdateView(UserOwnedMixin, SuccessMessageMixin, UpdateView):
@@ -452,8 +533,18 @@ class TransactionUpdateView(UserOwnedMixin, SuccessMessageMixin, UpdateView):
     success_message = "Transacción actualizada."
 
     def get_form(self, form_class=None):
-        """Instancia `TransactionForm` con el usuario para acotar sus querysets."""
+        """Instancia el formulario acotado al usuario autenticado."""
         return TransactionForm(self.request.user, **self.get_form_kwargs())
+
+    def form_valid(self, form):
+        """Revierte el efecto de la versión anterior sobre su deuda, guarda los cambios y
+        aplica el nuevo efecto, todo en una transacción de BD."""
+        with db_transaction.atomic():
+            old = Transaction.objects.select_related("debt").get(pk=self.object.pk)
+            revert_transaction_from_debt(old)
+            response = super().form_valid(form)
+            apply_transaction_to_debt(self.object)
+        return response
 
 
 class TransactionDeleteView(UserOwnedMixin, DeleteView):
@@ -462,6 +553,12 @@ class TransactionDeleteView(UserOwnedMixin, DeleteView):
     model = Transaction
     template_name = "core/transactions/confirm_delete.html"
     success_url = reverse_lazy("core:transaction_list")
+
+    def form_valid(self, form):
+        """Revierte el efecto de la transacción sobre su deuda asociada antes de eliminarla."""
+        with db_transaction.atomic():
+            revert_transaction_from_debt(self.object)
+            return super().form_valid(form)
 
 
 class TransactionReconcileView(LoginRequiredMixin, View):
