@@ -74,6 +74,42 @@ urlpatterns = [
     path("goals/<int:pk>/", views.GoalDetailView.as_view(), name="goal_detail"),
     path("goals/<int:pk>/edit/", views.GoalUpdateView.as_view(), name="goal_update"),
     path("goals/<int:pk>/delete/", views.GoalDeleteView.as_view(), name="goal_delete"),
+    # Contacts (Contactos)
+    path("contacts/", views.ContactListView.as_view(), name="contact_list"),
+    path("contacts/new/", views.ContactAddView.as_view(), name="contact_create"),
+    path("contacts/search/", views.ContactSearchView.as_view(), name="contact_search"),
+    path(
+        "contacts/<int:pk>/",
+        views.ContactDetailView.as_view(),
+        name="contact_detail",
+    ),
+    path(
+        "contacts/<int:pk>/delete/",
+        views.ContactDeleteView.as_view(),
+        name="contact_delete",
+    ),
+    # Contact groups (Grupos de contactos)
+    path("contacts/groups/", views.ContactGroupListView.as_view(), name="group_list"),
+    path(
+        "contacts/groups/new/",
+        views.ContactGroupCreateView.as_view(),
+        name="group_create",
+    ),
+    path(
+        "contacts/groups/<int:pk>/",
+        views.ContactGroupDetailView.as_view(),
+        name="group_detail",
+    ),
+    path(
+        "contacts/groups/<int:pk>/edit/",
+        views.ContactGroupUpdateView.as_view(),
+        name="group_update",
+    ),
+    path(
+        "contacts/groups/<int:pk>/delete/",
+        views.ContactGroupDeleteView.as_view(),
+        name="group_delete",
+    ),
     # Transactions
     path("transactions/", views.TransactionListView.as_view(), name="transaction_list"),
     path("transactions/new/", views.TransactionCreateView.as_view(), name="transaction_create"),

@@ -19,9 +19,20 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from core.admin import UserAdmin
-from core.models import Account, AccountCreditCardDetails, Budget, Category, Debt, Goal, Transaction
+from core.models import (
+    Account,
+    AccountCreditCardDetails,
+    Budget,
+    Category,
+    Contact,
+    ContactGroup,
+    Debt,
+    Goal,
+    Transaction,
+)
 from core.services.accounts import calculate_account_balance
 from core.services.budgets import calculate_budget_spent
+from core.services.contacts import add_contact, remove_contact, search_users
 from core.services.credit_cards import (
     get_available_credit,
     get_next_payment_due_date,
@@ -1163,3 +1174,387 @@ class TestAsociarAField:
         assert not Transaction.objects.filter(description="Retiro excesivo").exists()
         g.refresh_from_db()
         assert g.monto_abonado == Decimal("100000.00")
+
+
+# ── Contact (Contactos) tests ───────────────────────────────
+
+
+@pytest.fixture
+def juan(db):
+    return User.objects.create_user(
+        email="juan@example.com",
+        username="juan",
+        password="pass",
+        first_name="Juan",
+        last_name="Pérez",
+    )
+
+
+@pytest.fixture
+def maria(db):
+    return User.objects.create_user(
+        email="maria@example.com",
+        username="maria",
+        password="pass",
+        first_name="María",
+        last_name="Gómez",
+    )
+
+
+@pytest.mark.django_db
+class TestContactModel:
+    def test_clean_rejects_self(self, user):
+        c = Contact(user=user, contact=user)
+        with pytest.raises(Exception):
+            c.clean()
+
+    def test_unique_together(self, user, juan):
+        Contact.objects.create(user=user, contact=juan)
+        with pytest.raises(Exception):
+            Contact.objects.create(user=user, contact=juan)
+
+    def test_default_status(self, user, juan):
+        c = Contact.objects.create(user=user, contact=juan)
+        assert c.status == "contacto"
+
+
+@pytest.mark.django_db
+class TestContactService:
+    def test_add_creates_mirror_rows(self, user, juan):
+        add_contact(user, juan)
+        assert Contact.objects.filter(user=user, contact=juan).exists()
+        assert Contact.objects.filter(user=juan, contact=user).exists()
+
+    def test_add_is_idempotent(self, user, juan):
+        add_contact(user, juan)
+        add_contact(user, juan)
+        add_contact(juan, user)  # tampoco duplica desde el otro lado
+        assert Contact.objects.count() == 2
+
+    def test_add_self_raises(self, user):
+        with pytest.raises(Exception):
+            add_contact(user, user)
+        assert Contact.objects.count() == 0
+
+    def test_remove_deletes_both_rows(self, user, juan):
+        add_contact(user, juan)
+        remove_contact(user, juan)
+        assert Contact.objects.count() == 0
+
+    def test_search_excludes_self_and_existing(self, user, juan, maria):
+        add_contact(user, juan)
+        results = list(search_users(user, "example.com"))
+        assert maria in results
+        assert juan not in results  # ya es contacto
+        assert user not in results  # nunca a sí mismo
+
+    def test_search_short_query_returns_empty(self, user, juan):
+        assert list(search_users(user, "j")) == []
+        assert list(search_users(user, "")) == []
+
+
+@pytest.mark.django_db
+class TestContactWebViews:
+    def test_contact_list_scoped(self, client, user, juan, maria):
+        add_contact(user, juan)
+        add_contact(juan, maria)  # relación ajena, no debe verse
+        client.force_login(user)
+        response = client.get(reverse("core:contact_list"))
+        assert response.status_code == 200
+        content = response.content.decode()
+        assert "juan@example.com" in content
+        assert "maria@example.com" not in content
+
+    def test_add_contact_web_bidirectional(self, client, user, juan):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:contact_create"), {"contact_id": juan.pk}
+        )
+        assert response.status_code == 302
+        assert Contact.objects.filter(user=user, contact=juan).exists()
+        assert Contact.objects.filter(user=juan, contact=user).exists()
+
+    def test_add_self_blocked_web(self, client, user):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:contact_create"), {"contact_id": user.pk}
+        )
+        assert response.status_code == 200  # re-render con error
+        assert Contact.objects.count() == 0
+
+    def test_add_nonexistent_blocked_web(self, client, user):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:contact_create"), {"contact_id": 999999}
+        )
+        assert response.status_code == 200  # re-render con error
+        assert Contact.objects.count() == 0
+
+    def test_delete_removes_both_rows(self, client, user, juan):
+        add_contact(user, juan)
+        row = Contact.objects.get(user=user, contact=juan)
+        client.force_login(user)
+        response = client.post(
+            reverse("core:contact_delete", kwargs={"pk": row.pk})
+        )
+        assert response.status_code == 302
+        assert Contact.objects.count() == 0
+        assert User.objects.filter(pk=juan.pk).exists()  # el usuario no se borra
+
+    def test_contact_detail(self, client, user, juan):
+        add_contact(user, juan)
+        row = Contact.objects.get(user=user, contact=juan)
+        client.force_login(user)
+        response = client.get(
+            reverse("core:contact_detail", kwargs={"pk": row.pk})
+        )
+        assert response.status_code == 200
+        assert b"juan@example.com" in response.content
+
+    def test_search_endpoint_json(self, client, user, juan, maria):
+        client.force_login(user)
+        response = client.get(reverse("core:contact_search"), {"q": "maria"})
+        assert response.status_code == 200
+        data = response.json()
+        emails = [r["email"] for r in data["results"]]
+        assert "maria@example.com" in emails
+        assert user.email not in emails
+
+
+@pytest.mark.django_db
+class TestContactAPI:
+    def test_create_contact_mirrors(self, api_client, user, juan):
+        response = api_client.post(
+            reverse("contact-list"), {"contact": juan.pk}, format="json"
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["contact_email"] == "juan@example.com"
+        assert Contact.objects.filter(user=juan, contact=user).exists()
+
+    def test_create_self_blocked(self, api_client, user):
+        response = api_client.post(
+            reverse("contact-list"), {"contact": user.pk}, format="json"
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert Contact.objects.count() == 0
+
+    def test_duplicate_does_not_duplicate(self, api_client, user, juan):
+        api_client.post(reverse("contact-list"), {"contact": juan.pk}, format="json")
+        response = api_client.post(
+            reverse("contact-list"), {"contact": juan.pk}, format="json"
+        )
+        assert response.status_code == status.HTTP_201_CREATED  # idempotente
+        assert Contact.objects.count() == 2  # solo el par espejo
+
+    def test_list_scoped(self, api_client, user, juan, maria):
+        add_contact(user, juan)
+        add_contact(juan, maria)
+        response = api_client.get(reverse("contact-list"))
+        results = response.data.get("results", response.data)
+        emails = [r["contact_email"] for r in results]
+        assert emails == ["juan@example.com"]
+
+    def test_destroy_removes_both(self, api_client, user, juan):
+        add_contact(user, juan)
+        row = Contact.objects.get(user=user, contact=juan)
+        response = api_client.delete(
+            reverse("contact-detail", kwargs={"pk": row.pk})
+        )
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert Contact.objects.count() == 0
+
+    def test_search_action(self, api_client, user, juan):
+        response = api_client.get(reverse("contact-search"), {"q": "juan"})
+        assert response.status_code == status.HTTP_200_OK
+        emails = [r["email"] for r in response.data["results"]]
+        assert "juan@example.com" in emails
+
+
+# ── ContactGroup (Grupos) tests ─────────────────────────────
+
+
+@pytest.fixture
+def contact_juan(user, juan):
+    add_contact(user, juan)
+    return Contact.objects.get(user=user, contact=juan)
+
+
+@pytest.fixture
+def contact_maria(user, maria):
+    add_contact(user, maria)
+    return Contact.objects.get(user=user, contact=maria)
+
+
+@pytest.mark.django_db
+class TestContactGroupModel:
+    def test_unique_name_per_user(self, user):
+        ContactGroup.objects.create(user=user, name="Familia")
+        with pytest.raises(Exception):
+            ContactGroup.objects.create(user=user, name="Familia")
+
+    def test_same_name_other_user_allowed(self, user, juan):
+        ContactGroup.objects.create(user=user, name="Familia")
+        assert ContactGroup.objects.create(user=juan, name="Familia")
+
+    def test_member_cannot_repeat_in_group(self, user, contact_juan):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        group.members.add(contact_juan)  # idempotente, no duplica
+        assert group.members.count() == 1
+
+    def test_removing_contact_removes_from_groups(self, user, juan, contact_juan):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        remove_contact(user, juan)
+        group.refresh_from_db()
+        assert group.members.count() == 0
+        assert ContactGroup.objects.filter(pk=group.pk).exists()  # el grupo queda
+
+    def test_deleting_group_keeps_contacts(self, user, contact_juan):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        group.delete()
+        assert Contact.objects.filter(pk=contact_juan.pk).exists()
+
+
+@pytest.mark.django_db
+class TestContactGroupWebViews:
+    def test_group_list_shows_member_count(self, client, user, contact_juan):
+        group = ContactGroup.objects.create(user=user, name="Viaje Cartagena")
+        group.members.add(contact_juan)
+        client.force_login(user)
+        response = client.get(reverse("core:group_list"))
+        assert response.status_code == 200
+        assert b"Viaje Cartagena" in response.content
+
+    def test_create_group_with_members(self, client, user, contact_juan, contact_maria):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:group_create"),
+            {
+                "name": "Viaje",
+                "description": "Gastos del viaje",
+                "members": [contact_juan.pk, contact_maria.pk],
+            },
+        )
+        assert response.status_code == 302
+        group = ContactGroup.objects.get(user=user, name="Viaje")
+        assert group.members.count() == 2
+
+    def test_cannot_add_foreign_contact(self, client, user, juan, maria):
+        # Relación de otro usuario: juan→maria no es contacto de `user`.
+        add_contact(juan, maria)
+        foreign_row = Contact.objects.get(user=juan, contact=maria)
+        client.force_login(user)
+        response = client.post(
+            reverse("core:group_create"),
+            {"name": "Viaje", "members": [foreign_row.pk]},
+        )
+        assert response.status_code == 200  # re-render con error
+        assert not ContactGroup.objects.filter(user=user, name="Viaje").exists()
+
+    def test_duplicate_name_blocked(self, client, user):
+        ContactGroup.objects.create(user=user, name="Familia")
+        client.force_login(user)
+        response = client.post(
+            reverse("core:group_create"), {"name": "Familia"}
+        )
+        assert response.status_code == 200  # re-render con error
+        assert ContactGroup.objects.filter(user=user, name="Familia").count() == 1
+
+    def test_update_members_without_recreating(
+        self, client, user, contact_juan, contact_maria
+    ):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        client.force_login(user)
+        response = client.post(
+            reverse("core:group_update", kwargs={"pk": group.pk}),
+            {"name": "Viaje", "description": "", "members": [contact_maria.pk]},
+        )
+        assert response.status_code == 302
+        group.refresh_from_db()
+        members = list(group.members.all())
+        assert members == [contact_maria]
+
+    def test_group_detail_lists_members(self, client, user, contact_juan):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        client.force_login(user)
+        response = client.get(reverse("core:group_detail", kwargs={"pk": group.pk}))
+        assert response.status_code == 200
+        assert b"juan@example.com" in response.content
+
+    def test_delete_group_web(self, client, user, contact_juan):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        client.force_login(user)
+        response = client.post(reverse("core:group_delete", kwargs={"pk": group.pk}))
+        assert response.status_code == 302
+        assert not ContactGroup.objects.filter(pk=group.pk).exists()
+        assert Contact.objects.filter(pk=contact_juan.pk).exists()
+
+    def test_group_list_scoped(self, client, user, juan):
+        ContactGroup.objects.create(user=juan, name="Ajeno")
+        client.force_login(user)
+        response = client.get(reverse("core:group_list"))
+        assert b"Ajeno" not in response.content
+
+
+@pytest.mark.django_db
+class TestContactGroupAPI:
+    def test_create_group_with_members(self, api_client, user, contact_juan):
+        response = api_client.post(
+            reverse("contact-group-list"),
+            {"name": "Viaje API", "members": [contact_juan.pk]},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["member_count"] == 1
+        assert response.data["members_detail"][0]["email"] == "juan@example.com"
+
+    def test_foreign_contact_rejected(self, api_client, user, juan, maria):
+        add_contact(juan, maria)
+        foreign_row = Contact.objects.get(user=juan, contact=maria)
+        response = api_client.post(
+            reverse("contact-group-list"),
+            {"name": "Viaje", "members": [foreign_row.pk]},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_duplicate_name_rejected(self, api_client, user):
+        ContactGroup.objects.create(user=user, name="Familia")
+        response = api_client.post(
+            reverse("contact-group-list"), {"name": "Familia"}, format="json"
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_list_scoped(self, api_client, user, juan):
+        ContactGroup.objects.create(user=user, name="Mío")
+        ContactGroup.objects.create(user=juan, name="Ajeno")
+        response = api_client.get(reverse("contact-group-list"))
+        results = response.data.get("results", response.data)
+        names = [g["name"] for g in results]
+        assert names == ["Mío"]
+
+    def test_update_members(self, api_client, user, contact_juan, contact_maria):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        response = api_client.patch(
+            reverse("contact-group-detail", kwargs={"pk": group.pk}),
+            {"members": [contact_maria.pk]},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        group.refresh_from_db()
+        assert list(group.members.all()) == [contact_maria]
+
+    def test_delete_group_keeps_contacts(self, api_client, user, contact_juan):
+        group = ContactGroup.objects.create(user=user, name="Viaje")
+        group.members.add(contact_juan)
+        response = api_client.delete(
+            reverse("contact-group-detail", kwargs={"pk": group.pk})
+        )
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert Contact.objects.filter(pk=contact_juan.pk).exists()

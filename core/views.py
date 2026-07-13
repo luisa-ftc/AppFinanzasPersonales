@@ -12,15 +12,17 @@ import json
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.views import LoginView, LogoutView, PasswordResetView
 from django.contrib.messages.views import SuccessMessageMixin
+from django.core.exceptions import ValidationError
 from django.db import transaction as db_transaction
-from django.db.models import Q
-from django.http import HttpResponse
+from django.db.models import Count, Q
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.views.generic import (
     CreateView,
     DeleteView,
     DetailView,
+    FormView,
     ListView,
     TemplateView,
     UpdateView,
@@ -33,6 +35,8 @@ from core.forms import (
     AttachmentForm,
     BudgetForm,
     CategoryForm,
+    ContactAddForm,
+    ContactGroupForm,
     CSVImportForm,
     DebtForm,
     GoalForm,
@@ -47,10 +51,13 @@ from core.models import (
     Attachment,
     Budget,
     Category,
+    Contact,
+    ContactGroup,
     Debt,
     Goal,
     Transaction,
 )
+from core.services.contacts import add_contact, remove_contact, search_users
 from core.services.debts import (
     apply_transaction_to_debt,
     get_debt_transaction_history,
@@ -541,6 +548,161 @@ class GoalDetailView(UserOwnedMixin, DetailView):
             tx.amount_display = format_money_display(tx.amount)
         ctx["transactions"] = transactions
         return ctx
+
+
+class ContactListView(UserOwnedMixin, ListView):
+    """Lista de contactos del usuario autenticado."""
+
+    model = Contact
+    template_name = "core/contacts/list.html"
+    context_object_name = "contacts"
+
+    def get_queryset(self):
+        """Trae de una vez el usuario contacto para evitar N+1 en la tabla."""
+        return super().get_queryset().select_related("contact")
+
+
+class ContactAddView(LoginRequiredMixin, SuccessMessageMixin, FormView):
+    """Agrega un contacto buscando entre los usuarios registrados.
+
+    El formulario recibe el id elegido en el buscador; la creación de la
+    relación bidireccional se delega en `core.services.contacts.add_contact`.
+    """
+
+    form_class = ContactAddForm
+    template_name = "core/contacts/form.html"
+    success_url = reverse_lazy("core:contact_list")
+    success_message = "Contacto agregado."
+
+    def form_valid(self, form):
+        """Crea la relación espejo; muestra el error de negocio si no es válida."""
+        try:
+            add_contact(self.request.user, form.contact_user)
+        except ValidationError as exc:
+            form.add_error(None, exc.messages[0])
+            return self.form_invalid(form)
+        return super().form_valid(form)
+
+
+class ContactDetailView(UserOwnedMixin, DetailView):
+    """Detalle de un contacto del usuario autenticado."""
+
+    model = Contact
+    template_name = "core/contacts/detail.html"
+    context_object_name = "contact_rel"
+
+    def get_queryset(self):
+        return super().get_queryset().select_related("contact")
+
+
+class ContactDeleteView(UserOwnedMixin, DeleteView):
+    """Elimina la relación de contacto en ambas direcciones (no elimina al usuario)."""
+
+    model = Contact
+    template_name = "core/contacts/confirm_delete.html"
+    success_url = reverse_lazy("core:contact_list")
+
+    def form_valid(self, form):
+        """Borra las dos filas espejo vía el servicio, en vez del delete simple."""
+        remove_contact(self.object.user, self.object.contact)
+        return redirect(self.success_url)
+
+
+class ContactSearchView(LoginRequiredMixin, View):
+    """Búsqueda de usuarios registrados por correo (JSON) para el autocompletado
+    del formulario de agregar contacto."""
+
+    def get(self, request):
+        users = search_users(request.user, request.GET.get("q", ""))
+        return JsonResponse(
+            {
+                "results": [
+                    {
+                        "id": u.pk,
+                        "name": u.get_full_name() or u.username,
+                        "email": u.email,
+                    }
+                    for u in users
+                ]
+            }
+        )
+
+
+class ContactGroupListView(UserOwnedMixin, ListView):
+    """Lista de grupos de contactos del usuario, con número de integrantes."""
+
+    model = ContactGroup
+    template_name = "core/contacts/groups/list.html"
+    context_object_name = "groups"
+
+    def get_queryset(self):
+        """Anota el número de integrantes para mostrarlo sin N+1."""
+        return super().get_queryset().annotate(member_count=Count("members"))
+
+
+class ContactGroupCreateView(UserOwnedMixin, SuccessMessageMixin, CreateView):
+    """Creación de un grupo de contactos con sus integrantes."""
+
+    model = ContactGroup
+    form_class = ContactGroupForm
+    template_name = "core/contacts/groups/form.html"
+    success_url = reverse_lazy("core:group_list")
+    success_message = "Grupo creado."
+
+    def get_form(self, form_class=None):
+        """Instancia el formulario acotado al usuario autenticado."""
+        return ContactGroupForm(self.request.user, **self.get_form_kwargs())
+
+    def form_valid(self, form):
+        """Asigna el dueño, guarda el grupo y sincroniza sus integrantes."""
+        form.instance.user = self.request.user
+        with db_transaction.atomic():
+            response = super().form_valid(form)
+            self.object.members.set(form.cleaned_data["members"])
+        return response
+
+
+class ContactGroupUpdateView(UserOwnedMixin, SuccessMessageMixin, UpdateView):
+    """Edición de un grupo: nombre, descripción e integrantes, sin recrearlo."""
+
+    model = ContactGroup
+    form_class = ContactGroupForm
+    template_name = "core/contacts/groups/form.html"
+    success_url = reverse_lazy("core:group_list")
+    success_message = "Grupo actualizado."
+
+    def get_form(self, form_class=None):
+        """Instancia el formulario acotado al usuario autenticado."""
+        return ContactGroupForm(self.request.user, **self.get_form_kwargs())
+
+    def form_valid(self, form):
+        """Guarda los cambios y sincroniza los integrantes con la selección."""
+        with db_transaction.atomic():
+            response = super().form_valid(form)
+            self.object.members.set(form.cleaned_data["members"])
+        return response
+
+
+class ContactGroupDetailView(UserOwnedMixin, DetailView):
+    """Detalle de un grupo con la lista de sus integrantes."""
+
+    model = ContactGroup
+    template_name = "core/contacts/groups/detail.html"
+    context_object_name = "group"
+
+    def get_context_data(self, **kwargs):
+        """Agrega los integrantes con su usuario contacto ya cargado."""
+        ctx = super().get_context_data(**kwargs)
+        ctx["members"] = self.object.members.select_related("contact")
+        return ctx
+
+
+class ContactGroupDeleteView(UserOwnedMixin, DeleteView):
+    """Eliminación de un grupo (los contactos no se tocan, solo las pertenencias)."""
+
+    model = ContactGroup
+    template_name = "core/contacts/groups/confirm_delete.html"
+    success_url = reverse_lazy("core:group_list")
 
 
 class TransactionListView(UserOwnedMixin, ListView):

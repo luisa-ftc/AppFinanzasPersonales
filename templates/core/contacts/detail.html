@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ contact_rel.contact.get_full_name|default:contact_rel.contact.username }} · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ contact_rel.contact.get_full_name|default:contact_rel.contact.username }}</h1>
+    <div>
+        <a href="{% url 'core:contact_delete' contact_rel.pk %}" class="btn btn-danger">Eliminar</a>
+        <a href="{% url 'core:contact_list' %}" class="btn">Volver</a>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+    <table class="table">
+        <tr>
+            <th>Nombre</th>
+            <td>{{ contact_rel.contact.get_full_name|default:contact_rel.contact.username }}</td>
+        </tr>
+        <tr>
+            <th>Correo</th>
+            <td>{{ contact_rel.contact.email }}</td>
+        </tr>
+        <tr>
+            <th>Estado</th>
+            <td><span class="badge badge-success">{{ contact_rel.get_status_display }}</span></td>
+        </tr>
+        <tr>
+            <th>Fecha agregado</th>
+            <td>{{ contact_rel.created_at|date:"d/m/Y" }}</td>
+        </tr>
+    </table>
+</div>
+{% endblock %}

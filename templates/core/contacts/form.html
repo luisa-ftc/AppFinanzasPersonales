@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Nuevo contacto · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>Nuevo contacto</h1>
+    <p class="help-text">
+        Busca por correo electrónico entre los usuarios registrados y selecciona
+        a quien quieras agregar como contacto.
+    </p>
+    <form method="post" novalidate>
+        {% csrf_token %}
+
+        {% if form.non_field_errors %}
+        <div style="background:#fee2e2; border:1px solid #fca5a5; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1rem; color:#991b1b;">
+            {% for error in form.non_field_errors %}
+            <p style="margin:0;">{{ error }}</p>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="form-field">
+            <label for="contact-search">Buscar usuario</label>
+            <input type="text" id="contact-search" placeholder="correo@ejemplo.com" autocomplete="off">
+        </div>
+
+        <ul id="search-results" class="hidden" style="list-style:none; margin:0 0 1rem; padding:0; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;"></ul>
+
+        <div id="selected-contact" class="hidden" style="margin-bottom:1rem; padding:0.75rem 1rem; border:1px solid #86efac; background:#f0fdf4; border-radius:8px;">
+            Seleccionado: <strong id="selected-name"></strong> (<span id="selected-email"></span>)
+        </div>
+
+        {{ form.contact_id }}
+        {{ form.contact_id.errors }}
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="submit-btn" disabled>Agregar contacto</button>
+            <a href="{% url 'core:contact_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const searchInput = document.getElementById('contact-search');
+    const resultsList = document.getElementById('search-results');
+    const hiddenInput = document.getElementById('id_contact_id');
+    const selectedBox = document.getElementById('selected-contact');
+    const selectedName = document.getElementById('selected-name');
+    const selectedEmail = document.getElementById('selected-email');
+    const submitBtn = document.getElementById('submit-btn');
+    const searchUrl = "{% url 'core:contact_search' %}";
+    let debounceTimer = null;
+
+    if (!searchInput || !hiddenInput) {
+        return;
+    }
+
+    function clearResults() {
+        resultsList.innerHTML = '';
+        resultsList.classList.add('hidden');
+    }
+
+    function selectUser(user) {
+        hiddenInput.value = user.id;
+        selectedName.textContent = user.name;
+        selectedEmail.textContent = user.email;
+        selectedBox.classList.remove('hidden');
+        submitBtn.disabled = false;
+        clearResults();
+        searchInput.value = user.email;
+    }
+
+    function renderResults(users) {
+        clearResults();
+        if (!users.length) {
+            return;
+        }
+        users.forEach(function (user) {
+            const item = document.createElement('li');
+            item.style.cssText = 'padding:0.6rem 1rem; cursor:pointer; border-bottom:1px solid #e2e8f0;';
+            item.innerHTML = '<strong>' + user.name + '</strong><br><small>' + user.email + '</small>';
+            item.addEventListener('click', function () { selectUser(user); });
+            resultsList.appendChild(item);
+        });
+        resultsList.classList.remove('hidden');
+    }
+
+    searchInput.addEventListener('input', function () {
+        const query = searchInput.value.trim();
+        hiddenInput.value = '';
+        selectedBox.classList.add('hidden');
+        submitBtn.disabled = true;
+        clearTimeout(debounceTimer);
+        if (query.length < 2) {
+            clearResults();
+            return;
+        }
+        debounceTimer = setTimeout(function () {
+            fetch(searchUrl + '?q=' + encodeURIComponent(query))
+                .then(function (response) { return response.json(); })
+                .then(function (data) { renderResults(data.results || []); })
+                .catch(function () { clearResults(); });
+        }, 250);
+    });
+})();
+</script>
+{% endblock %}

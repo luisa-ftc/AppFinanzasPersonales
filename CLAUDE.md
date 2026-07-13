@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FinTrack es una app de gestión financiera personal construida con Django 4.x + Django REST Framework. Expone el mismo modelo de dominio a través de dos interfaces paralelas: una interfaz web clásica renderizada por el servidor (vistas basadas en clases + templates de Django) y una API REST (ViewSets de DRF + JWT opcional), ambas apoyadas en una misma capa de servicios. Todo el código de la app vive en una única app de Django, `core`; `fintrack/` es solo la configuración a nivel de proyecto (settings/urls/wsgi/asgi).
 
-Módulos de negocio (mismo nivel en la nav web y en el router de la API): Dashboard, Cuentas, Categorías, Presupuestos, **Deudas**, **Metas**, Transacciones.
+Módulos de negocio (mismo nivel en la nav web y en el router de la API): Dashboard, Cuentas, Categorías, Presupuestos, **Deudas**, **Metas**, Transacciones, **Contactos**.
 
 ## Comandos
 
@@ -94,6 +94,22 @@ Es la relación de signos **invertida** respecto a Deudas (allí el `expense` es
 ### Campo «Asociar a»: una transacción va a una deuda O a una meta, nunca ambas
 
 `Transaction` tiene dos FK opcionales excluyentes: `debt` y `goal` (ambos `SET_NULL`, ambos con `related_name="transactions"`). En la API se exponen como dos campos y `TransactionSerializer.validate()` impide asignar ambos a la vez (además de validar las reglas de la meta). En la web, `TransactionForm` **reemplaza** esos dos campos por un único `ChoiceField` `asociar_a` con optgroups (Deudas/Metas) y valores `debt:<pk>` / `goal:<pk>`; su `clean()` traduce la selección a `instance.debt`/`instance.goal` (el otro a `None`) y dispara la validación correspondiente. Las transferencias fuerzan ambos a `None`. Las vistas/ViewSets de Transaction invocan **ambos** pares de servicios (`..._debt` y `..._goal`) dentro del mismo `db_transaction.atomic()`; cada uno es no-op si su FK es `None`. Al editar o eliminar una transacción, se revierte el efecto anterior sobre deuda y meta antes de aplicar el nuevo.
+
+### Módulo de Contactos: relación bidireccional entre usuarios con filas espejo
+
+`Contact` (`core/models.py`) relaciona dos usuarios registrados (`user` → dueño de la fila, `contact` → el otro usuario; ambos FK a `AUTH_USER_MODEL`). No existe un modelo de "personas" aparte: todo contacto es un `core.User`. La relación es **bidireccional** y se persiste como **filas espejo**: agregar crea 2 filas (A→B y B→A) y eliminar borra ambas, siempre vía `core/services/contacts.py` (`add_contact`/`remove_contact`, con `db_transaction.atomic()`); **nunca** crear/borrar filas `Contact` sueltas, o el espejo queda desincronizado. `add_contact` es idempotente (`get_or_create` + `unique_together (user, contact)`) y rechaza agregarse a sí mismo (`ValidationError`, también en `Contact.clean()`).
+
+Esta forma (una fila por dirección, con `status` propio por fila) es deliberada: cada lista de contactos es un simple `filter(user=...)` que reutiliza `UserOwnedMixin`/`UserOwnedViewSet`, y deja preparados estados asimétricos futuros (solicitud enviada/recibida, bloqueado) — hoy `ContactStatus` solo tiene `CONTACTO`, que es el default.
+
+La búsqueda de usuarios para agregar (`search_users`) filtra por email (`icontains`), excluye al propio usuario y a los contactos existentes, exige mínimo 2 caracteres y limita resultados. La expone la web en `contacts/search/` (`ContactSearchView`, JSON para el autocompletado vanilla JS de `templates/core/contacts/form.html`) y la API como `@action search` de `ContactViewSet`. En la web, agregar no usa un ModelForm: `ContactAddForm` recibe un `contact_id` oculto que puebla el buscador. El módulo Gastos Compartidos (futuro) debe seleccionar participantes únicamente desde esta lista.
+
+### Grupos de contactos: los integrantes son filas `Contact`, no usuarios
+
+`ContactGroup` (`core/models.py`) agrupa contactos de un usuario (familia, viaje, etc.) para los futuros Gastos Compartidos. `members` es un M2M a **`Contact`** (las filas de relación, no `User`) con tabla intermedia explícita `ContactGroupMembership`. Esa elección es deliberada y tiene dos consecuencias que no hay que "arreglar":
+- Al eliminar un contacto (vía `remove_contact`, que borra las filas espejo), la BD lo saca de todos los grupos por CASCADE — no existe (ni hace falta) lógica de limpieza.
+- El dueño del grupo no puede ser integrante (no es contacto de sí mismo); los módulos consumidores deben tratarlo como participante aparte.
+
+La tabla intermedia explícita existe para poder añadir campos por integrante a futuro (rol, invitación) sin migrar el M2M. `unique_together`: `(user, name)` en el grupo (validado también en `ContactGroupForm.clean_name` y `ContactGroupSerializer.validate_name`, porque la validación de modelo no cubre campos fuera del form) y `(group, contact)` en la membresía. El formulario web usa `ContactMultipleChoiceField` (checkboxes) acotado a los contactos del usuario; la vista sincroniza integrantes con `members.set()` dentro de `atomic()`. Rutas web bajo `contacts/groups/` (names `group_*`); API en `/api/contact-groups/`.
 
 ### Gotcha: montos en `style="width:...%"` deben renderizarse sin localización
 

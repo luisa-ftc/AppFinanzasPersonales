@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Contactos · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Contactos</h1>
+    <div>
+        <a href="{% url 'core:contact_create' %}" class="btn btn-primary">Nuevo contacto</a>
+        <a href="{% url 'core:group_list' %}" class="btn">Grupos</a>
+    </div>
+</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Nombre</th>
+            <th>Correo</th>
+            <th>Estado</th>
+            <th>Fecha agregado</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for c in contacts %}
+        <tr>
+            <td>
+                <a href="{% url 'core:contact_detail' c.pk %}">
+                    {{ c.contact.get_full_name|default:c.contact.username }}
+                </a>
+            </td>
+            <td>{{ c.contact.email }}</td>
+            <td><span class="badge badge-success">{{ c.get_status_display }}</span></td>
+            <td>{{ c.created_at|date:"d/m/Y" }}</td>
+            <td class="actions">
+                <a href="{% url 'core:contact_detail' c.pk %}">Ver</a>
+                <a href="{% url 'core:contact_delete' c.pk %}" class="text-danger">Eliminar</a>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">No tienes contactos agregados.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

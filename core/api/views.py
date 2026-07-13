@@ -7,6 +7,7 @@ en `core.services`; el aislamiento por usuario se centraliza en
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.http import HttpResponse
 from rest_framework import generics, status, viewsets
 from rest_framework.decorators import action
@@ -18,6 +19,8 @@ from core.api.serializers import (
     AccountSerializer,
     BudgetSerializer,
     CategorySerializer,
+    ContactGroupSerializer,
+    ContactSerializer,
     DebtSerializer,
     GoalSerializer,
     RegisterSerializer,
@@ -30,11 +33,14 @@ from core.models import (
     Attachment,
     Budget,
     Category,
+    Contact,
+    ContactGroup,
     Debt,
     Goal,
     Tag,
     Transaction,
 )
+from core.services.contacts import add_contact, remove_contact, search_users
 from core.services.debts import apply_transaction_to_debt, revert_transaction_from_debt
 from core.services.goals import apply_transaction_to_goal, revert_transaction_from_goal
 from core.services.accounts import calculate_account_balance, get_user_total_balance
@@ -137,6 +143,63 @@ class GoalViewSet(UserOwnedViewSet):
         txs = goal.transactions.select_related("account", "category").order_by("-date")
         serializer = TransactionSerializer(txs, many=True, context={"request": request})
         return Response(serializer.data)
+
+
+class ContactViewSet(UserOwnedViewSet):
+    """CRUD de contactos del usuario autenticado.
+
+    La creación/eliminación delega en `core.services.contacts` para mantener
+    las filas espejo de la relación bidireccional sincronizadas.
+    """
+
+    queryset = Contact.objects.select_related("contact")
+    serializer_class = ContactSerializer
+
+    def create(self, request, *args, **kwargs):
+        """Agrega un contacto (relación bidireccional); errores de negocio → 400."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            row = add_contact(request.user, serializer.validated_data["contact"])
+        except ValidationError as exc:
+            return Response(
+                {"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response(
+            self.get_serializer(row).data, status=status.HTTP_201_CREATED
+        )
+
+    def perform_destroy(self, instance):
+        """Elimina la relación en ambas direcciones (no elimina usuarios)."""
+        remove_contact(instance.user, instance.contact)
+
+    @action(detail=False, methods=["get"])
+    def search(self, request):
+        """Busca usuarios registrados por correo para agregarlos como contacto."""
+        users = search_users(request.user, request.GET.get("q", ""))
+        return Response(
+            {
+                "results": [
+                    {
+                        "id": u.pk,
+                        "name": u.get_full_name() or u.username,
+                        "email": u.email,
+                    }
+                    for u in users
+                ]
+            }
+        )
+
+
+class ContactGroupViewSet(UserOwnedViewSet):
+    """CRUD de grupos de contactos del usuario autenticado.
+
+    Los integrantes son filas `Contact` del usuario; el serializer acota el
+    queryset y sincroniza el M2M (tabla intermedia `ContactGroupMembership`).
+    """
+
+    queryset = ContactGroup.objects.prefetch_related("members__contact")
+    serializer_class = ContactGroupSerializer
 
 
 class TransactionViewSet(UserOwnedViewSet):

@@ -17,6 +17,8 @@ from core.models import (
     Attachment,
     Budget,
     Category,
+    Contact,
+    ContactGroup,
     Debt,
     Goal,
     Tag,
@@ -160,6 +162,74 @@ class GoalForm(forms.ModelForm):
             "fecha_limite": forms.DateInput(attrs={"type": "date"}),
             "observaciones": forms.Textarea(attrs={"rows": 3}),
         }
+
+
+class ContactAddForm(forms.Form):
+    """Formulario para agregar un contacto: recibe el id del usuario elegido
+    en el buscador (el autocompletado JS de la plantilla pobla el campo oculto)."""
+
+    contact_id = forms.IntegerField(widget=forms.HiddenInput())
+
+    def clean_contact_id(self):
+        """Resuelve el id al usuario registrado; error si no existe."""
+        contact_id = self.cleaned_data["contact_id"]
+        contact_user = User.objects.filter(pk=contact_id).first()
+        if contact_user is None:
+            raise forms.ValidationError("El usuario seleccionado no existe.")
+        self.contact_user = contact_user
+        return contact_id
+
+
+class ContactMultipleChoiceField(forms.ModelMultipleChoiceField):
+    """Selector múltiple de contactos que muestra nombre y correo del usuario
+    contacto en vez del `__str__` de la fila `Contact`."""
+
+    def label_from_instance(self, obj):
+        name = obj.contact.get_full_name() or obj.contact.username
+        return f"{name} ({obj.contact.email})"
+
+
+class ContactGroupForm(forms.ModelForm):
+    """Formulario CRUD de grupos de contactos.
+
+    Los integrantes se acotan a los contactos del usuario; la asignación del
+    M2M (con tabla intermedia explícita) la hace la vista con `members.set()`.
+    """
+
+    members = ContactMultipleChoiceField(
+        queryset=Contact.objects.none(),
+        required=False,
+        widget=forms.CheckboxSelectMultiple(),
+        label="Integrantes",
+        help_text="Solo puedes agregar personas de tu lista de contactos.",
+    )
+
+    class Meta:
+        model = ContactGroup
+        fields = ("name", "description")
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+        }
+
+    def __init__(self, user, *args, **kwargs):
+        """Acota los integrantes seleccionables a los contactos del `user` recibido."""
+        super().__init__(*args, **kwargs)
+        self.user = user
+        self.fields["members"].queryset = Contact.objects.filter(
+            user=user
+        ).select_related("contact")
+        if self.instance.pk:
+            self.fields["members"].initial = self.instance.members.all()
+
+    def clean_name(self):
+        """Valida que el usuario no tenga otro grupo con el mismo nombre."""
+        name = self.cleaned_data["name"]
+        qs = ContactGroup.objects.filter(user=self.user, name=name)
+        if self.instance.pk:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise forms.ValidationError("Ya tienes un grupo con ese nombre.")
+        return name
 
 
 class TransactionForm(forms.ModelForm):

@@ -16,6 +16,8 @@ from core.models import (
     Attachment,
     Budget,
     Category,
+    Contact,
+    ContactGroup,
     Debt,
     Goal,
     Tag,
@@ -428,6 +430,109 @@ class GoalSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data["user"] = self.context["request"].user
         return super().create(validated_data)
+
+
+class ContactSerializer(serializers.ModelSerializer):
+    """Serializer de contactos. `contact` es el id del usuario a agregar; la
+    creación de la relación bidireccional (filas espejo) la hace el ViewSet
+    vía `core.services.contacts.add_contact`, no este serializer."""
+
+    contact_email = serializers.EmailField(source="contact.email", read_only=True)
+    contact_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Contact
+        fields = (
+            "id",
+            "contact",
+            "contact_email",
+            "contact_name",
+            "status",
+            "created_at",
+        )
+        read_only_fields = ("id", "status", "created_at")
+
+    def get_contact_name(self, obj):
+        return obj.contact.get_full_name() or obj.contact.username
+
+
+class ContactGroupSerializer(serializers.ModelSerializer):
+    """Serializer de grupos de contactos. `members` recibe/expone ids de filas
+    `Contact` del usuario (acotadas en `__init__`); `members_detail` y
+    `member_count` son calculados de solo lectura."""
+
+    members = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Contact.objects.none(), required=False
+    )
+    members_detail = serializers.SerializerMethodField()
+    member_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ContactGroup
+        fields = (
+            "id",
+            "name",
+            "description",
+            "members",
+            "members_detail",
+            "member_count",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = (
+            "id",
+            "created_at",
+            "updated_at",
+            "members_detail",
+            "member_count",
+        )
+
+    def __init__(self, *args, **kwargs):
+        """Acota los integrantes seleccionables a los contactos del usuario."""
+        super().__init__(*args, **kwargs)
+        user = self.context["request"].user
+        self.fields["members"].child_relation.queryset = Contact.objects.filter(
+            user=user
+        )
+
+    def get_members_detail(self, obj):
+        return [
+            {
+                "id": m.pk,
+                "name": m.contact.get_full_name() or m.contact.username,
+                "email": m.contact.email,
+            }
+            for m in obj.members.select_related("contact")
+        ]
+
+    def get_member_count(self, obj):
+        return obj.members.count()
+
+    def validate_name(self, value):
+        """Valida que el usuario no tenga otro grupo con el mismo nombre."""
+        user = self.context["request"].user
+        qs = ContactGroup.objects.filter(user=user, name=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("Ya tienes un grupo con ese nombre.")
+        return value
+
+    def create(self, validated_data):
+        """Crea el grupo del usuario autenticado y asigna sus integrantes."""
+        members = validated_data.pop("members", [])
+        validated_data["user"] = self.context["request"].user
+        group = ContactGroup.objects.create(**validated_data)
+        group.members.set(members)
+        return group
+
+    def update(self, instance, validated_data):
+        """Actualiza el grupo y, si se envían, sincroniza sus integrantes."""
+        members = validated_data.pop("members", None)
+        instance = super().update(instance, validated_data)
+        if members is not None:
+            instance.members.set(members)
+        return instance
 
 
 class DashboardSerializer(serializers.Serializer):
