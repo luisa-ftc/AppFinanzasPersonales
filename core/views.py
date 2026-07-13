@@ -35,16 +35,31 @@ from core.forms import (
     CategoryForm,
     CSVImportForm,
     DebtForm,
+    GoalForm,
     LoginForm,
     RegisterForm,
     TransactionFilterForm,
     TransactionForm,
 )
-from core.models import Account, AccountCreditCardDetails, Attachment, Budget, Category, Debt, Transaction
+from core.models import (
+    Account,
+    AccountCreditCardDetails,
+    Attachment,
+    Budget,
+    Category,
+    Debt,
+    Goal,
+    Transaction,
+)
 from core.services.debts import (
     apply_transaction_to_debt,
     get_debt_transaction_history,
     revert_transaction_from_debt,
+)
+from core.services.goals import (
+    apply_transaction_to_goal,
+    get_goal_transaction_history,
+    revert_transaction_from_goal,
 )
 from core.services.accounts import calculate_account_balance, get_balances_by_currency, get_user_total_balance
 from core.services.credit_cards import (
@@ -456,6 +471,78 @@ class DebtDetailView(UserOwnedMixin, DetailView):
         return ctx
 
 
+class GoalListView(UserOwnedMixin, ListView):
+    """Lista de metas del usuario autenticado, con montos formateados para mostrar."""
+
+    model = Goal
+    template_name = "core/goals/list.html"
+    context_object_name = "goals"
+
+    def get_context_data(self, **kwargs):
+        """Agrega los montos formateados de cada meta para mostrarlos en la tabla."""
+        ctx = super().get_context_data(**kwargs)
+        for goal in ctx.get("goals", []):
+            goal.monto_requerido_display = format_money_display(goal.monto_requerido)
+            goal.monto_abonado_display = format_money_display(goal.monto_abonado)
+            goal.monto_pendiente_display = format_money_display(goal.monto_pendiente)
+        return ctx
+
+
+class GoalCreateView(UserOwnedMixin, SuccessMessageMixin, CreateView):
+    """Creación de una meta para el usuario autenticado."""
+
+    model = Goal
+    form_class = GoalForm
+    template_name = "core/goals/form.html"
+    success_url = reverse_lazy("core:goal_list")
+    success_message = "Meta registrada."
+
+    def form_valid(self, form):
+        """Asigna el usuario autenticado como dueño de la meta antes de guardar."""
+        form.instance.user = self.request.user
+        return super().form_valid(form)
+
+
+class GoalUpdateView(UserOwnedMixin, SuccessMessageMixin, UpdateView):
+    """Edición de una meta existente del usuario autenticado."""
+
+    model = Goal
+    form_class = GoalForm
+    template_name = "core/goals/form.html"
+    success_url = reverse_lazy("core:goal_list")
+    success_message = "Meta actualizada."
+
+
+class GoalDeleteView(UserOwnedMixin, DeleteView):
+    """Eliminación de una meta del usuario autenticado (las transacciones asociadas
+    conservan su historial vía `SET_NULL` en `Transaction.goal`)."""
+
+    model = Goal
+    template_name = "core/goals/confirm_delete.html"
+    success_url = reverse_lazy("core:goal_list")
+
+
+class GoalDetailView(UserOwnedMixin, DetailView):
+    """Detalle de una meta con su historial de transacciones asociadas."""
+
+    model = Goal
+    template_name = "core/goals/detail.html"
+    context_object_name = "goal"
+
+    def get_context_data(self, **kwargs):
+        """Agrega montos formateados de la meta y su historial de transacciones asociadas."""
+        ctx = super().get_context_data(**kwargs)
+        goal = self.object
+        goal.monto_requerido_display = format_money_display(goal.monto_requerido)
+        goal.monto_abonado_display = format_money_display(goal.monto_abonado)
+        goal.monto_pendiente_display = format_money_display(goal.monto_pendiente)
+        transactions = get_goal_transaction_history(goal)
+        for tx in transactions:
+            tx.amount_display = format_money_display(tx.amount)
+        ctx["transactions"] = transactions
+        return ctx
+
+
 class TransactionListView(UserOwnedMixin, ListView):
     """Lista paginada de transacciones del usuario, filtrable por `TransactionFilterForm`."""
 
@@ -515,11 +602,12 @@ class TransactionCreateView(UserOwnedMixin, SuccessMessageMixin, CreateView):
         return TransactionForm(self.request.user, **self.get_form_kwargs())
 
     def form_valid(self, form):
-        """Guarda la transacción y aplica su efecto sobre la deuda asociada, todo en una transacción de BD."""
+        """Guarda la transacción y aplica su efecto sobre la deuda/meta asociada, todo en una transacción de BD."""
         form.instance.user = self.request.user
         with db_transaction.atomic():
             response = super().form_valid(form)
             apply_transaction_to_debt(self.object)
+            apply_transaction_to_goal(self.object)
         return response
 
 
@@ -537,13 +625,15 @@ class TransactionUpdateView(UserOwnedMixin, SuccessMessageMixin, UpdateView):
         return TransactionForm(self.request.user, **self.get_form_kwargs())
 
     def form_valid(self, form):
-        """Revierte el efecto de la versión anterior sobre su deuda, guarda los cambios y
+        """Revierte el efecto de la versión anterior sobre su deuda/meta, guarda los cambios y
         aplica el nuevo efecto, todo en una transacción de BD."""
         with db_transaction.atomic():
-            old = Transaction.objects.select_related("debt").get(pk=self.object.pk)
+            old = Transaction.objects.select_related("debt", "goal").get(pk=self.object.pk)
             revert_transaction_from_debt(old)
+            revert_transaction_from_goal(old)
             response = super().form_valid(form)
             apply_transaction_to_debt(self.object)
+            apply_transaction_to_goal(self.object)
         return response
 
 
@@ -555,9 +645,10 @@ class TransactionDeleteView(UserOwnedMixin, DeleteView):
     success_url = reverse_lazy("core:transaction_list")
 
     def form_valid(self, form):
-        """Revierte el efecto de la transacción sobre su deuda asociada antes de eliminarla."""
+        """Revierte el efecto de la transacción sobre su deuda/meta asociada antes de eliminarla."""
         with db_transaction.atomic():
             revert_transaction_from_debt(self.object)
+            revert_transaction_from_goal(self.object)
             return super().form_valid(form)
 
 

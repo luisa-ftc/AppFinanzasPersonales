@@ -9,6 +9,8 @@ usuarios en los selects.
 from django import forms
 from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 
+from django.core.exceptions import ValidationError
+
 from core.models import (
     Account,
     AccountCreditCardDetails,
@@ -16,6 +18,7 @@ from core.models import (
     Budget,
     Category,
     Debt,
+    Goal,
     Tag,
     Transaction,
     User,
@@ -145,8 +148,33 @@ class DebtForm(forms.ModelForm):
         }
 
 
+class GoalForm(forms.ModelForm):
+    """Formulario CRUD de metas de ahorro/inversión."""
+
+    class Meta:
+        model = Goal
+        fields = ("nombre", "monto_requerido", "monto_abonado", "fecha_limite", "observaciones")
+        widgets = {
+            "monto_requerido": forms.NumberInput(attrs={"step": "0.01"}),
+            "monto_abonado": forms.NumberInput(attrs={"step": "0.01"}),
+            "fecha_limite": forms.DateInput(attrs={"type": "date"}),
+            "observaciones": forms.Textarea(attrs={"rows": 3}),
+        }
+
+
 class TransactionForm(forms.ModelForm):
-    """Formulario CRUD de transacciones (ingreso, gasto o transferencia)."""
+    """Formulario CRUD de transacciones (ingreso, gasto o transferencia).
+
+    El campo `asociar_a` es un desplegable único que agrupa deudas y metas
+    del usuario; en `clean()` se traduce a los FK excluyentes
+    `instance.debt` / `instance.goal`.
+    """
+
+    asociar_a = forms.ChoiceField(
+        required=False,
+        label="Asociar a",
+        help_text="Opcional: asocia esta transacción a una deuda o una meta existente.",
+    )
 
     class Meta:
         model = Transaction
@@ -158,7 +186,6 @@ class TransactionForm(forms.ModelForm):
             "description",
             "date",
             "transfer_to_account",
-            "debt",
             "tags",
             "notes",
         )
@@ -170,26 +197,83 @@ class TransactionForm(forms.ModelForm):
         }
 
     def __init__(self, user, *args, **kwargs):
-        """Acota cuentas, categorías, etiquetas y deudas seleccionables a las del `user` recibido."""
+        """Acota cuentas, categorías y etiquetas al usuario, y arma el desplegable «Asociar a»."""
         super().__init__(*args, **kwargs)
+        self.user = user
         self.fields["account"].queryset = Account.objects.filter(user=user, is_active=True)
         self.fields["category"].queryset = Category.objects.filter(user=user, is_active=True)
         self.fields["transfer_to_account"].queryset = Account.objects.filter(
             user=user, is_active=True
         )
-        self.fields["debt"].queryset = Debt.objects.filter(user=user)
         self.fields["tags"].queryset = Tag.objects.filter(user=user)
 
+        debts = Debt.objects.filter(user=user)
+        goals = Goal.objects.filter(user=user)
+        choices = [("", "--------- (ninguna)")]
+        if debts:
+            choices.append(
+                ("Deudas", [(f"debt:{d.pk}", f"{d.nombre} (Deuda)") for d in debts])
+            )
+        if goals:
+            choices.append(
+                ("Metas", [(f"goal:{g.pk}", f"{g.nombre} (Meta)") for g in goals])
+            )
+        self.fields["asociar_a"].choices = choices
+
+        if self.instance and self.instance.pk:
+            if self.instance.debt_id:
+                self.fields["asociar_a"].initial = f"debt:{self.instance.debt_id}"
+            elif self.instance.goal_id:
+                self.fields["asociar_a"].initial = f"goal:{self.instance.goal_id}"
+
     def clean(self):
-        """Valida que un gasto asociado a una deuda no supere su saldo pendiente."""
+        """Traduce `asociar_a` a los FK excluyentes y valida las reglas de deuda/meta."""
+        from core.services.debts import validate_expense_against_debt
+        from core.services.goals import (
+            validate_expense_against_goal,
+            validate_income_against_goal,
+        )
+
         cleaned = super().clean()
-        debt = cleaned.get("debt")
         tx_type = cleaned.get("transaction_type")
         amount = cleaned.get("amount")
-        if debt and tx_type == "expense" and amount:
-            from core.services.debts import validate_expense_against_debt
+        value = cleaned.get("asociar_a") or ""
 
-            validate_expense_against_debt(debt, amount)
+        # Reinicia ambos FK; se reasigna según la selección.
+        self.instance.debt = None
+        self.instance.goal = None
+
+        # Las transferencias no se asocian a deuda ni meta.
+        if tx_type == "transfer" or not value:
+            return cleaned
+
+        kind, _, pk = value.partition(":")
+        if kind == "debt":
+            debt = Debt.objects.filter(user=self.user, pk=pk).first()
+            if debt is None:
+                self.add_error("asociar_a", "Deuda no válida.")
+                return cleaned
+            self.instance.debt = debt
+            if tx_type == "expense" and amount:
+                try:
+                    validate_expense_against_debt(debt, amount)
+                except ValidationError as exc:
+                    self.add_error("asociar_a", exc.messages[0])
+        elif kind == "goal":
+            goal = Goal.objects.filter(user=self.user, pk=pk).first()
+            if goal is None:
+                self.add_error("asociar_a", "Meta no válida.")
+                return cleaned
+            self.instance.goal = goal
+            if amount:
+                try:
+                    if tx_type == "income":
+                        validate_income_against_goal(goal, amount)
+                    elif tx_type == "expense":
+                        validate_expense_against_goal(goal, amount)
+                except ValidationError as exc:
+                    self.add_error("asociar_a", exc.messages[0])
+        return cleaned
 
 
 class TransactionFilterForm(forms.Form):

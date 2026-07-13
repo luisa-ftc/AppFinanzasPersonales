@@ -19,7 +19,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from core.admin import UserAdmin
-from core.models import Account, AccountCreditCardDetails, Budget, Category, Debt, Transaction
+from core.models import Account, AccountCreditCardDetails, Budget, Category, Debt, Goal, Transaction
 from core.services.accounts import calculate_account_balance
 from core.services.budgets import calculate_budget_spent
 from core.services.credit_cards import (
@@ -30,6 +30,12 @@ from core.services.credit_cards import (
 )
 from core.services.csv_io import import_transactions_csv
 from core.services.debts import apply_transaction_to_debt, revert_transaction_from_debt, validate_expense_against_debt
+from core.services.goals import (
+    apply_transaction_to_goal,
+    revert_transaction_from_goal,
+    validate_expense_against_goal,
+    validate_income_against_goal,
+)
 from core.services.reports import get_monthly_income_expense
 
 User = get_user_model()
@@ -730,3 +736,430 @@ class TestDebtWebViews:
         client.force_login(user)
         response = client.get(reverse("core:debt_detail", kwargs={"pk": debt.pk}))
         assert response.status_code == 200
+
+
+# ── Goal (Metas) tests ──────────────────────────────────────
+
+
+@pytest.fixture
+def goal(user):
+    return Goal.objects.create(
+        user=user,
+        nombre="Viaje a Japón",
+        monto_requerido=Decimal("5000000.00"),
+        fecha_limite=date(2026, 12, 31),
+    )
+
+
+@pytest.mark.django_db
+class TestGoalModel:
+    def test_monto_pendiente(self, goal):
+        assert goal.monto_pendiente == Decimal("5000000.00")
+
+    def test_estado_pendiente(self, goal):
+        assert goal.estado == "pendiente"
+
+    def test_estado_completada(self, user):
+        g = Goal.objects.create(
+            user=user,
+            nombre="Completa",
+            monto_requerido=Decimal("500.00"),
+            monto_abonado=Decimal("500.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        assert g.estado == "completada"
+
+    def test_percent_abonado(self, user):
+        g = Goal.objects.create(
+            user=user,
+            nombre="Media",
+            monto_requerido=Decimal("200.00"),
+            monto_abonado=Decimal("100.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        assert g.percent_abonado == Decimal("50")
+
+
+@pytest.mark.django_db
+class TestGoalTransactionIntegration:
+    def test_income_increases_monto_abonado(self, user, account, goal):
+        goal.monto_abonado = Decimal("1000000.00")
+        goal.save()
+        tx = Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="income",
+            amount=Decimal("500000.00"),
+            description="Aporte",
+            date="2026-06-01",
+            goal=goal,
+        )
+        apply_transaction_to_goal(tx)
+        goal.refresh_from_db()
+        assert goal.monto_abonado == Decimal("1500000.00")
+
+    def test_expense_decreases_monto_abonado(self, user, account, goal):
+        goal.monto_abonado = Decimal("2000000.00")
+        goal.save()
+        tx = Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="expense",
+            amount=Decimal("300000.00"),
+            description="Retiro",
+            date="2026-06-01",
+            goal=goal,
+        )
+        apply_transaction_to_goal(tx)
+        goal.refresh_from_db()
+        assert goal.monto_abonado == Decimal("1700000.00")
+
+    def test_income_cannot_exceed_requerido(self, user):
+        g = Goal.objects.create(
+            user=user,
+            nombre="Tope",
+            monto_requerido=Decimal("1000.00"),
+            monto_abonado=Decimal("900.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        with pytest.raises(Exception):
+            validate_income_against_goal(g, Decimal("200.00"))
+
+    def test_expense_cannot_go_negative(self, user):
+        g = Goal.objects.create(
+            user=user,
+            nombre="Fondo",
+            monto_requerido=Decimal("1000.00"),
+            monto_abonado=Decimal("100.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        with pytest.raises(Exception):
+            validate_expense_against_goal(g, Decimal("200.00"))
+
+    def test_revert_income(self, user, account, goal):
+        goal.monto_abonado = Decimal("1000000.00")
+        goal.save()
+        tx = Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="income",
+            amount=Decimal("500000.00"),
+            description="Aporte",
+            date="2026-06-01",
+            goal=goal,
+        )
+        apply_transaction_to_goal(tx)
+        revert_transaction_from_goal(tx)
+        goal.refresh_from_db()
+        assert goal.monto_abonado == Decimal("1000000.00")
+
+    def test_no_op_without_goal(self, user, account):
+        tx = Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="income",
+            amount=Decimal("100.00"),
+            description="Normal",
+            date="2026-06-01",
+        )
+        apply_transaction_to_goal(tx)  # no debe lanzar
+
+
+@pytest.mark.django_db
+class TestGoalAPI:
+    def test_create_goal(self, api_client):
+        response = api_client.post(
+            reverse("goal-list"),
+            {
+                "nombre": "API Meta",
+                "monto_requerido": "500.00",
+                "fecha_limite": "2026-12-31",
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["monto_pendiente"] == "500.00"
+
+    def test_list_goals_scoped(self, api_client, user):
+        Goal.objects.create(
+            user=user,
+            nombre="Mía",
+            monto_requerido=Decimal("100.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        other = User.objects.create_user(
+            email="other2@example.com", username="other2", password="pass"
+        )
+        Goal.objects.create(
+            user=other,
+            nombre="Ajena",
+            monto_requerido=Decimal("200.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        response = api_client.get(reverse("goal-list"))
+        results = response.data.get("results", response.data)
+        assert len(results) == 1
+        assert results[0]["nombre"] == "Mía"
+
+    def test_computed_fields(self, api_client, user):
+        Goal.objects.create(
+            user=user,
+            nombre="Comp",
+            monto_requerido=Decimal("1000.00"),
+            monto_abonado=Decimal("400.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        response = api_client.get(reverse("goal-list"))
+        results = response.data.get("results", response.data)
+        g = results[0]
+        assert g["monto_pendiente"] == "600.00"
+        assert g["estado"] == "pendiente"
+        assert Decimal(g["percent_abonado"]) == Decimal("40")
+
+    def test_income_updates_goal(self, api_client, user, account, goal):
+        response = api_client.post(
+            reverse("transaction-list"),
+            {
+                "account": account.pk,
+                "transaction_type": "income",
+                "amount": "1000000.00",
+                "description": "Aporte API",
+                "date": "2026-06-01",
+                "goal": goal.pk,
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        goal.refresh_from_db()
+        assert goal.monto_abonado == Decimal("1000000.00")
+
+    def test_cannot_link_debt_and_goal(self, api_client, user, account, goal, debt):
+        response = api_client.post(
+            reverse("transaction-list"),
+            {
+                "account": account.pk,
+                "transaction_type": "income",
+                "amount": "100.00",
+                "description": "Ambos",
+                "date": "2026-06-01",
+                "debt": debt.pk,
+                "goal": goal.pk,
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+@pytest.mark.django_db
+class TestGoalWebViews:
+    def test_goal_list(self, client, user):
+        client.force_login(user)
+        response = client.get(reverse("core:goal_list"))
+        assert response.status_code == 200
+
+    def test_create_goal_web(self, client, user):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:goal_create"),
+            {
+                "nombre": "Web Meta",
+                "monto_requerido": "1000.00",
+                "monto_abonado": "0.00",
+                "fecha_limite": "2026-12-31",
+            },
+        )
+        assert response.status_code == 302
+        assert Goal.objects.filter(user=user, nombre="Web Meta").exists()
+
+    def test_goal_detail(self, client, user, goal):
+        client.force_login(user)
+        response = client.get(reverse("core:goal_detail", kwargs={"pk": goal.pk}))
+        assert response.status_code == 200
+
+    def test_goal_update_web(self, client, user, goal):
+        client.force_login(user)
+        get_response = client.get(reverse("core:goal_update", kwargs={"pk": goal.pk}))
+        assert get_response.status_code == 200
+        response = client.post(
+            reverse("core:goal_update", kwargs={"pk": goal.pk}),
+            {
+                "nombre": "Viaje a Japón",
+                "monto_requerido": "6000000.00",
+                "monto_abonado": "1500000.00",
+                "fecha_limite": "2027-01-31",
+            },
+        )
+        assert response.status_code == 302
+        goal.refresh_from_db()
+        assert goal.monto_requerido == Decimal("6000000.00")
+        assert goal.monto_abonado == Decimal("1500000.00")
+
+    def test_goal_delete_web(self, client, user, goal):
+        client.force_login(user)
+        response = client.post(reverse("core:goal_delete", kwargs={"pk": goal.pk}))
+        assert response.status_code == 302
+        assert not Goal.objects.filter(pk=goal.pk).exists()
+
+    def test_goal_list_shows_progress_and_pending(self, client, user):
+        client.force_login(user)
+        Goal.objects.create(
+            user=user,
+            nombre="Progreso",
+            monto_requerido=Decimal("1000.00"),
+            monto_abonado=Decimal("250.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        response = client.get(reverse("core:goal_list"))
+        content = response.content.decode()
+        assert "25%" in content  # porcentaje de progreso
+        assert "750.00" in content  # monto pendiente calculado
+
+
+@pytest.mark.django_db
+class TestAsociarAField:
+    def test_associate_income_to_goal(self, client, user, account, goal):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:transaction_create"),
+            {
+                "account": account.pk,
+                "transaction_type": "income",
+                "amount": "1000000.00",
+                "description": "Aporte",
+                "date": "2026-06-01",
+                "asociar_a": f"goal:{goal.pk}",
+            },
+        )
+        assert response.status_code == 302
+        goal.refresh_from_db()
+        assert goal.monto_abonado == Decimal("1000000.00")
+        tx = Transaction.objects.get(user=user, description="Aporte")
+        assert tx.goal_id == goal.pk
+        assert tx.debt_id is None
+
+    def test_associate_expense_to_debt_still_works(self, client, user, account, debt):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:transaction_create"),
+            {
+                "account": account.pk,
+                "transaction_type": "expense",
+                "amount": "200.00",
+                "description": "Abono deuda",
+                "date": "2026-06-01",
+                "asociar_a": f"debt:{debt.pk}",
+            },
+        )
+        assert response.status_code == 302
+        debt.refresh_from_db()
+        assert debt.monto_pagado == Decimal("200.00")
+
+    def test_income_overpay_goal_blocked(self, client, user, account):
+        client.force_login(user)
+        g = Goal.objects.create(
+            user=user,
+            nombre="Tope",
+            monto_requerido=Decimal("1000.00"),
+            monto_abonado=Decimal("900.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        response = client.post(
+            reverse("core:transaction_create"),
+            {
+                "account": account.pk,
+                "transaction_type": "income",
+                "amount": "500.00",
+                "description": "Sobre-abono",
+                "date": "2026-06-01",
+                "asociar_a": f"goal:{g.pk}",
+            },
+        )
+        assert response.status_code == 200  # re-render con error
+        assert not Transaction.objects.filter(description="Sobre-abono").exists()
+        g.refresh_from_db()
+        assert g.monto_abonado == Decimal("900.00")
+
+    def test_transfer_clears_association(self, client, user, account, goal):
+        client.force_login(user)
+        other = Account.objects.create(
+            user=user, name="Destino", account_type="savings"
+        )
+        response = client.post(
+            reverse("core:transaction_create"),
+            {
+                "account": account.pk,
+                "transaction_type": "transfer",
+                "amount": "100.00",
+                "description": "Transferencia",
+                "date": "2026-06-01",
+                "transfer_to_account": other.pk,
+                "asociar_a": f"goal:{goal.pk}",
+            },
+        )
+        assert response.status_code == 302
+        tx = Transaction.objects.get(user=user, description="Transferencia")
+        assert tx.goal_id is None
+        assert tx.debt_id is None
+
+    def test_form_renders_asociar_a(self, client, user):
+        client.force_login(user)
+        response = client.get(reverse("core:transaction_create"))
+        assert response.status_code == 200
+        assert b"Asociar a" in response.content
+
+    def test_expense_to_goal_web(self, client, user, account):
+        client.force_login(user)
+        g = Goal.objects.create(
+            user=user,
+            nombre="Fondo",
+            monto_requerido=Decimal("5000000.00"),
+            monto_abonado=Decimal("2000000.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        response = client.post(
+            reverse("core:transaction_create"),
+            {
+                "account": account.pk,
+                "transaction_type": "expense",
+                "amount": "300000.00",
+                "description": "Retiro meta",
+                "date": "2026-06-01",
+                "asociar_a": f"goal:{g.pk}",
+            },
+        )
+        assert response.status_code == 302
+        g.refresh_from_db()
+        assert g.monto_abonado == Decimal("1700000.00")
+        assert g.monto_pendiente == Decimal("3300000.00")
+
+    def test_asociar_a_shows_type_labels(self, client, user, debt, goal):
+        client.force_login(user)
+        response = client.get(reverse("core:transaction_create"))
+        content = response.content.decode()
+        assert "(Deuda)" in content
+        assert "(Meta)" in content
+
+    def test_expense_withdraw_cannot_exceed_abonado_web(self, client, user, account):
+        client.force_login(user)
+        g = Goal.objects.create(
+            user=user,
+            nombre="Escaso",
+            monto_requerido=Decimal("5000000.00"),
+            monto_abonado=Decimal("100000.00"),
+            fecha_limite=date(2026, 12, 31),
+        )
+        response = client.post(
+            reverse("core:transaction_create"),
+            {
+                "account": account.pk,
+                "transaction_type": "expense",
+                "amount": "500000.00",
+                "description": "Retiro excesivo",
+                "date": "2026-06-01",
+                "asociar_a": f"goal:{g.pk}",
+            },
+        )
+        assert response.status_code == 200  # re-render con error
+        assert not Transaction.objects.filter(description="Retiro excesivo").exists()
+        g.refresh_from_db()
+        assert g.monto_abonado == Decimal("100000.00")

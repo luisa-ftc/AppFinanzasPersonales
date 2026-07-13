@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% load l10n %}
+{% block title %}{{ goal.nombre }} · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ goal.nombre }}</h1>
+    <div>
+        <a href="{% url 'core:goal_update' goal.pk %}" class="btn btn-primary">Editar</a>
+        <a href="{% url 'core:goal_list' %}" class="btn">Volver</a>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+    <table class="table">
+        <tr>
+            <th>Monto objetivo</th>
+            <td>${{ goal.monto_requerido_display }}</td>
+        </tr>
+        <tr>
+            <th>Monto abonado</th>
+            <td>${{ goal.monto_abonado_display }}</td>
+        </tr>
+        <tr>
+            <th>Monto pendiente</th>
+            <td>${{ goal.monto_pendiente_display }}</td>
+        </tr>
+        <tr>
+            <th>Estado</th>
+            <td>
+                {% if goal.estado == "completada" %}
+                <span class="badge badge-success">Completada</span>
+                {% else %}
+                <span class="badge badge-warning">Pendiente</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <th>Progreso</th>
+            <td>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:{% localize off %}{{ goal.percent_abonado }}{% endlocalize %}%"></div>
+                </div>
+                {{ goal.percent_abonado|floatformat:0 }}%
+            </td>
+        </tr>
+        <tr>
+            <th>Fecha limite</th>
+            <td>{{ goal.fecha_limite }}</td>
+        </tr>
+        {% if goal.observaciones %}
+        <tr>
+            <th>Observaciones</th>
+            <td>{{ goal.observaciones }}</td>
+        </tr>
+        {% endif %}
+    </table>
+</div>
+
+<h2>Historial de transacciones asociadas</h2>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Fecha</th>
+            <th>Tipo</th>
+            <th>Descripcion</th>
+            <th>Cuenta</th>
+            <th class="text-right">Monto</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for tx in transactions %}
+        <tr>
+            <td>{{ tx.date }}</td>
+            <td>
+                {% if tx.transaction_type == "income" %}
+                <span class="badge badge-success">Ingreso</span>
+                {% elif tx.transaction_type == "expense" %}
+                <span class="badge badge-danger">Gasto</span>
+                {% else %}
+                <span class="badge">{{ tx.get_transaction_type_display }}</span>
+                {% endif %}
+            </td>
+            <td>{{ tx.description }}</td>
+            <td>{{ tx.account.name }}</td>
+            <td class="text-right">${{ tx.amount_display }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">No hay transacciones asociadas a esta meta.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -54,11 +54,11 @@
             {{ form.transfer_to_account.errors }}
         </div>
 
-        <div class="form-field" id="debt-field">
-            {{ form.debt.label_tag }}
-            {{ form.debt }}
-            {{ form.debt.errors }}
-            <p class="help-text">Opcional: asocia esta transacción a una deuda existente.</p>
+        <div class="form-field" id="asociar-field">
+            {{ form.asociar_a.label_tag }}
+            {{ form.asociar_a }}
+            {{ form.asociar_a.errors }}
+            <p class="help-text">{{ form.asociar_a.help_text }}</p>
         </div>
 
         <div class="form-field">
@@ -106,7 +106,7 @@
     const categoryField = document.getElementById('category-field');
     const categorySelect = document.getElementById('id_category');
     const transferField = document.getElementById('transfer-account-field');
-    const debtField = document.getElementById('debt-field');
+    const associateField = document.getElementById('asociar-field');
 
     if (!typeSelect || !categorySelect) {
         return;
@@ -153,11 +153,11 @@
             }
         }
 
-        if (debtField) {
+        if (associateField) {
             if (type === 'transfer') {
-                debtField.classList.add('hidden');
+                associateField.classList.add('hidden');
             } else {
-                debtField.classList.remove('hidden');
+                associateField.classList.remove('hidden');
             }
         }
     }

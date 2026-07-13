@@ -17,6 +17,7 @@ from core.models import (
     Budget,
     Category,
     Debt,
+    Goal,
     Tag,
     Transaction,
 )
@@ -26,6 +27,10 @@ from core.services.credit_cards import (
     get_next_payment_due_date,
     get_next_statement_date,
     get_used_credit,
+)
+from core.services.goals import (
+    validate_expense_against_goal,
+    validate_income_against_goal,
 )
 
 User = get_user_model()
@@ -244,6 +249,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             "reconciled_at",
             "transfer_to_account",
             "debt",
+            "goal",
             "tags",
             "content_hash",
             "notes",
@@ -261,19 +267,43 @@ class TransactionSerializer(serializers.ModelSerializer):
         )
 
     def __init__(self, *args, **kwargs):
-        """Acota cuenta, categoría, cuenta destino y etiquetas al usuario autenticado."""
+        """Acota cuenta, categoría, cuenta destino, deuda, meta y etiquetas al usuario autenticado."""
         super().__init__(*args, **kwargs)
         user = self.context["request"].user
         self.fields["account"].queryset = Account.objects.filter(user=user)
         self.fields["category"].queryset = Category.objects.filter(user=user)
         self.fields["transfer_to_account"].queryset = Account.objects.filter(user=user)
         self.fields["debt"].queryset = Debt.objects.filter(user=user)
+        self.fields["goal"].queryset = Goal.objects.filter(user=user)
         self.fields["tags"].queryset = Tag.objects.filter(user=user)
 
     def create(self, validated_data):
         """Asocia la transacción creada al usuario autenticado de la petición."""
         validated_data["user"] = self.context["request"].user
         return super().create(validated_data)
+
+    def validate(self, attrs):
+        """Impide asociar a deuda y meta a la vez, y valida las reglas de la meta.
+
+        La lógica de deudas se mantiene igual que antes (validación solo en la
+        capa web); aquí solo se añade la exclusión mutua y las reglas de metas.
+        """
+        debt = attrs.get("debt", getattr(self.instance, "debt", None))
+        goal = attrs.get("goal", getattr(self.instance, "goal", None))
+        if debt and goal:
+            raise serializers.ValidationError(
+                "Una transacción no puede asociarse a una deuda y una meta a la vez."
+            )
+        tx_type = attrs.get(
+            "transaction_type", getattr(self.instance, "transaction_type", None)
+        )
+        amount = attrs.get("amount", getattr(self.instance, "amount", None))
+        if goal and amount and tx_type != "transfer":
+            if tx_type == "income":
+                validate_income_against_goal(goal, amount)
+            elif tx_type == "expense":
+                validate_expense_against_goal(goal, amount)
+        return attrs
 
 
 class BudgetSerializer(serializers.ModelSerializer):
@@ -351,6 +381,49 @@ class DebtSerializer(serializers.ModelSerializer):
 
     def get_percent_paid(self, obj):
         return str(obj.percent_paid)
+
+    def create(self, validated_data):
+        validated_data["user"] = self.context["request"].user
+        return super().create(validated_data)
+
+
+class GoalSerializer(serializers.ModelSerializer):
+    monto_pendiente = serializers.SerializerMethodField()
+    estado = serializers.SerializerMethodField()
+    percent_abonado = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Goal
+        fields = (
+            "id",
+            "nombre",
+            "monto_requerido",
+            "monto_abonado",
+            "fecha_limite",
+            "observaciones",
+            "monto_pendiente",
+            "estado",
+            "percent_abonado",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = (
+            "id",
+            "created_at",
+            "updated_at",
+            "monto_pendiente",
+            "estado",
+            "percent_abonado",
+        )
+
+    def get_monto_pendiente(self, obj):
+        return str(obj.monto_pendiente)
+
+    def get_estado(self, obj):
+        return str(obj.estado)
+
+    def get_percent_abonado(self, obj):
+        return str(obj.percent_abonado)
 
     def create(self, validated_data):
         validated_data["user"] = self.context["request"].user
