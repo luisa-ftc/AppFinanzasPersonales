@@ -3,7 +3,16 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
-from core.models import Account, Attachment, Budget, Category, Tag, Transaction, User
+from core.models import (
+    Account,
+    AccountCreditCardDetails,
+    Attachment,
+    Budget,
+    Category,
+    Tag,
+    Transaction,
+    User,
+)
 
 
 @admin.register(User)
@@ -29,11 +38,18 @@ class UserAdmin(BaseUserAdmin):
     )
 
 
+class AccountCreditCardDetailsInline(admin.StackedInline):
+    model = AccountCreditCardDetails
+    extra = 0
+    can_delete = True
+
+
 @admin.register(Account)
 class AccountAdmin(admin.ModelAdmin):
     list_display = ("name", "user", "account_type", "currency", "is_active")
     list_filter = ("account_type", "is_active", "currency")
     search_fields = ("name", "user__email")
+    inlines = [AccountCreditCardDetailsInline]
 
 
 @admin.register(Category)

@@ -6,11 +6,88 @@
     <h1>{% if object %}Editar cuenta{% else %}Nueva cuenta{% endif %}</h1>
     <form method="post">
         {% csrf_token %}
-        {{ form.as_p }}
+
+        <div class="form-field">
+            {{ form.account_type.label_tag }}
+            {{ form.account_type }}
+            {{ form.account_type.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.name.label_tag }}
+            {{ form.name }}
+            {{ form.name.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.currency.label_tag }}
+            {{ form.currency }}
+            {{ form.currency.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.initial_balance.label_tag }}
+            {{ form.initial_balance }}
+            {{ form.initial_balance.errors }}
+            <p class="help-text">Para tarjetas de crédito, este valor representa la deuda inicial.</p>
+        </div>
+
+        <div class="form-field">
+            {{ form.is_active.label_tag }}
+            {{ form.is_active }}
+            {{ form.is_active.errors }}
+        </div>
+
+        {% with credit_form=detail_forms.credit %}
+        <div id="credit-card-fields" class="hidden">
+            <div class="form-field">
+                {{ credit_form.credit_limit.label_tag }}
+                {{ credit_form.credit_limit }}
+                {{ credit_form.credit_limit.errors }}
+            </div>
+            <div class="form-field">
+                {{ credit_form.statement_day.label_tag }}
+                {{ credit_form.statement_day }}
+                {{ credit_form.statement_day.errors }}
+                <p class="help-text">Día del mes (1-31) en que se genera el estado de cuenta.</p>
+            </div>
+            <div class="form-field">
+                {{ credit_form.payment_due_day.label_tag }}
+                {{ credit_form.payment_due_day }}
+                {{ credit_form.payment_due_day.errors }}
+                <p class="help-text">Día del mes (1-31) límite para el pago.</p>
+            </div>
+        </div>
+        {% endwith %}
+
         <div class="form-actions">
             <button type="submit" class="btn btn-primary">Guardar</button>
             <a href="{% url 'core:account_list' %}" class="btn">Cancelar</a>
         </div>
     </form>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const typeSelect = document.getElementById('id_account_type');
+    const creditFields = document.getElementById('credit-card-fields');
+
+    if (!typeSelect || !creditFields) {
+        return;
+    }
+
+    function applyFilters() {
+        if (typeSelect.value === 'credit') {
+            creditFields.classList.remove('hidden');
+        } else {
+            creditFields.classList.add('hidden');
+        }
+    }
+
+    typeSelect.addEventListener('change', applyFilters);
+    applyFilters();
+})();
+</script>
 {% endblock %}

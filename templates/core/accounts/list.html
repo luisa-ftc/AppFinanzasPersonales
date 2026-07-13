@@ -14,6 +14,7 @@
             <th>Moneda</th>
             <th class="text-right">Balance</th>
             <th>Estado</th>
+            <th>Detalle tarjeta</th>
             <th></th>
         </tr>
     </thead>
@@ -25,13 +26,23 @@
             <td>{{ item.account.currency }}</td>
             <td class="text-right">${{ item.balance_display }}</td>
             <td>{% if item.account.is_active %}Activa{% else %}Inactiva{% endif %}</td>
+            <td>
+                {% if item.credit_info %}
+                Cupo: ${{ item.credit_info.credit_limit_display }}<br>
+                Disponible: ${{ item.credit_info.available_display }}<br>
+                Corte: {{ item.credit_info.next_statement_date }}<br>
+                Pago: {{ item.credit_info.next_due_date }}
+                {% else %}
+                —
+                {% endif %}
+            </td>
             <td class="actions">
                 <a href="{% url 'core:account_update' item.account.pk %}">Editar</a>
                 <a href="{% url 'core:account_delete' item.account.pk %}" class="text-danger">Eliminar</a>
             </td>
         </tr>
         {% empty %}
-        <tr><td colspan="6">No hay cuentas registradas.</td></tr>
+        <tr><td colspan="7">No hay cuentas registradas.</td></tr>
         {% endfor %}
     </tbody>
 </table>

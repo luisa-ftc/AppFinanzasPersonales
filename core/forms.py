@@ -9,7 +9,16 @@ usuarios en los selects.
 from django import forms
 from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
 
-from core.models import Account, Attachment, Budget, Category, Tag, Transaction, User
+from core.models import (
+    Account,
+    AccountCreditCardDetails,
+    Attachment,
+    Budget,
+    Category,
+    Tag,
+    Transaction,
+    User,
+)
 
 
 class RegisterForm(UserCreationForm):
@@ -49,6 +58,28 @@ class AccountForm(forms.ModelForm):
         widgets = {
             "initial_balance": forms.NumberInput(attrs={"step": "0.01"}),
         }
+
+
+class AccountCreditCardDetailsForm(forms.ModelForm):
+    """Formulario de los campos específicos de una cuenta de tipo tarjeta de crédito."""
+
+    class Meta:
+        model = AccountCreditCardDetails
+        fields = ("credit_limit", "statement_day", "payment_due_day")
+        widgets = {
+            "credit_limit": forms.NumberInput(attrs={"step": "0.01", "min": "0.01"}),
+            "statement_day": forms.NumberInput(attrs={"min": "1", "max": "31"}),
+            "payment_due_day": forms.NumberInput(attrs={"min": "1", "max": "31"}),
+        }
+
+
+# Registro extensible: account_type -> ModelForm de los campos específicos
+# de ese tipo. Para agregar un tipo de cuenta nuevo con sus propios campos,
+# basta con crear su ModelForm de detalles y añadir una entrada aquí; no se
+# toca AccountForm ni las vistas de cuentas.
+ACCOUNT_DETAIL_FORMS = {
+    Account.AccountType.CREDIT: AccountCreditCardDetailsForm,
+}
 
 
 class CategoryForm(forms.ModelForm):

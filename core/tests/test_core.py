@@ -9,6 +9,7 @@ import pytest
 from copy import copy
 from decimal import Decimal
 from datetime import date
+from types import SimpleNamespace
 
 from django.conf import settings
 from django.template import Context
@@ -18,9 +19,15 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from core.admin import UserAdmin
-from core.models import Account, Budget, Category, Transaction
+from core.models import Account, AccountCreditCardDetails, Budget, Category, Transaction
 from core.services.accounts import calculate_account_balance
 from core.services.budgets import calculate_budget_spent
+from core.services.credit_cards import (
+    get_available_credit,
+    get_next_payment_due_date,
+    get_next_statement_date,
+    get_used_credit,
+)
 from core.services.csv_io import import_transactions_csv
 from core.services.reports import get_monthly_income_expense
 
@@ -307,6 +314,187 @@ class TestAccountAPI:
         response = api_client.get(url)
         assert response.status_code == status.HTTP_200_OK
         assert len(response.data["results"]) == 1
+
+
+@pytest.mark.django_db
+class TestAccountCreditCardAPI:
+    """Verifica el CRUD de cuentas de tipo tarjeta de crédito (detalle anidado) vía API."""
+
+    def test_create_credit_account_with_details(self, api_client):
+        url = reverse("account-list")
+        response = api_client.post(
+            url,
+            {
+                "name": "Tarjeta Visa",
+                "account_type": "credit",
+                "currency": "COL",
+                "credit_card_details": {
+                    "credit_limit": "5000.00",
+                    "statement_day": 5,
+                    "payment_due_day": 20,
+                },
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert AccountCreditCardDetails.objects.count() == 1
+        details = AccountCreditCardDetails.objects.get()
+        assert details.credit_limit == Decimal("5000.00")
+        assert details.statement_day == 5
+
+    def test_update_credit_card_details(self, api_client, user):
+        account = Account.objects.create(user=user, name="Tarjeta", account_type="credit")
+        AccountCreditCardDetails.objects.create(
+            account=account,
+            credit_limit=Decimal("3000.00"),
+            statement_day=1,
+            payment_due_day=10,
+        )
+        url = reverse("account-detail", kwargs={"pk": account.pk})
+        response = api_client.patch(
+            url,
+            {
+                "credit_card_details": {
+                    "credit_limit": "6000.00",
+                    "statement_day": 15,
+                    "payment_due_day": 25,
+                }
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        account.credit_card_details.refresh_from_db()
+        assert account.credit_card_details.credit_limit == Decimal("6000.00")
+        assert account.credit_card_details.statement_day == 15
+
+    def test_changing_type_away_from_credit_deletes_details(self, api_client, user):
+        account = Account.objects.create(user=user, name="Tarjeta", account_type="credit")
+        AccountCreditCardDetails.objects.create(
+            account=account,
+            credit_limit=Decimal("3000.00"),
+            statement_day=1,
+            payment_due_day=10,
+        )
+        url = reverse("account-detail", kwargs={"pk": account.pk})
+        response = api_client.patch(url, {"account_type": "savings"}, format="json")
+        assert response.status_code == status.HTTP_200_OK
+        assert AccountCreditCardDetails.objects.filter(account=account).count() == 0
+
+
+@pytest.mark.django_db
+class TestCreditCardService:
+    """Verifica los cálculos derivados de tarjetas de crédito en core/services/credit_cards.py."""
+
+    def test_get_used_credit_grows_with_expenses(self, user, account):
+        # El fixture `account` ya trae initial_balance=1000.00 (deuda inicial).
+        account.account_type = "credit"
+        account.save()
+        Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="expense",
+            amount=Decimal("300.00"),
+            description="Compra",
+            date="2026-01-05",
+        )
+        assert get_used_credit(account) == Decimal("1300.00")
+
+    def test_get_used_credit_shrinks_with_incoming_payment(self, user, account):
+        account.account_type = "credit"
+        account.save()
+        payer = Account.objects.create(
+            user=user, name="Cuenta Pagadora", initial_balance=Decimal("2000.00")
+        )
+        Transaction.objects.create(
+            user=user,
+            account=payer,
+            transfer_to_account=account,
+            transaction_type="transfer",
+            amount=Decimal("400.00"),
+            description="Pago tarjeta",
+            date="2026-01-10",
+        )
+        assert get_used_credit(account) == Decimal("600.00")
+
+    def test_get_available_credit_clamped_to_zero_when_over_limit(self, user, account):
+        account.account_type = "credit"
+        account.save()
+        Transaction.objects.create(
+            user=user,
+            account=account,
+            transaction_type="expense",
+            amount=Decimal("6000.00"),
+            description="Compra grande",
+            date="2026-01-05",
+        )
+        details = AccountCreditCardDetails.objects.create(
+            account=account,
+            credit_limit=Decimal("5000.00"),
+            statement_day=5,
+            payment_due_day=20,
+        )
+        assert get_available_credit(account, details) == Decimal("0.00")
+
+    def test_next_statement_date_future_this_month(self):
+        details = SimpleNamespace(statement_day=20)
+        assert get_next_statement_date(details, today=date(2026, 1, 10)) == date(2026, 1, 20)
+
+    def test_next_statement_date_already_passed_goes_to_next_month(self):
+        details = SimpleNamespace(statement_day=5)
+        assert get_next_statement_date(details, today=date(2026, 1, 10)) == date(2026, 2, 5)
+
+    def test_next_statement_date_today_counts_as_next(self):
+        details = SimpleNamespace(statement_day=10)
+        assert get_next_statement_date(details, today=date(2026, 1, 10)) == date(2026, 1, 10)
+
+    def test_next_statement_date_clamped_on_short_month(self):
+        details = SimpleNamespace(statement_day=31)
+        assert get_next_statement_date(details, today=date(2026, 2, 1)) == date(2026, 2, 28)
+
+    def test_next_payment_due_date_uses_payment_due_day(self):
+        details = SimpleNamespace(payment_due_day=15)
+        assert get_next_payment_due_date(details, today=date(2026, 1, 1)) == date(2026, 1, 15)
+
+
+@pytest.mark.django_db
+class TestAccountCreditCardWebView:
+    """Verifica que el formulario web cree/actualice ambos objetos (Account y
+    AccountCreditCardDetails) de forma atómica según el tipo elegido."""
+
+    def test_create_credit_account_creates_details(self, client, user):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:account_create"),
+            {
+                "account_type": "credit",
+                "name": "Tarjeta Web",
+                "currency": "COL",
+                "initial_balance": "0.00",
+                "is_active": "on",
+                "credit_limit": "4000.00",
+                "statement_day": "10",
+                "payment_due_day": "25",
+            },
+        )
+        assert response.status_code == 302
+        account = Account.objects.get(name="Tarjeta Web")
+        assert AccountCreditCardDetails.objects.filter(account=account).exists()
+
+    def test_create_non_credit_account_skips_details(self, client, user):
+        client.force_login(user)
+        response = client.post(
+            reverse("core:account_create"),
+            {
+                "account_type": "savings",
+                "name": "Ahorros Web",
+                "currency": "COL",
+                "initial_balance": "0.00",
+                "is_active": "on",
+            },
+        )
+        assert response.status_code == 302
+        account = Account.objects.get(name="Ahorros Web")
+        assert not AccountCreditCardDetails.objects.filter(account=account).exists()
 
 
 @pytest.mark.django_db

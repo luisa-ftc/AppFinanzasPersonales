@@ -4,7 +4,15 @@ from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 
-from core.models import Account, Budget, Category, Tag, Transaction, User
+from core.models import (
+    Account,
+    AccountCreditCardDetails,
+    Budget,
+    Category,
+    Tag,
+    Transaction,
+    User,
+)
 
 
 class Command(BaseCommand):
@@ -68,6 +76,23 @@ class Command(BaseCommand):
             name="Transporte",
             category_type="expense",
             defaults={"color": "#f59e0b"},
+        )
+
+        credit_card, _ = Account.objects.get_or_create(
+            user=user,
+            name="Tarjeta Visa",
+            defaults={
+                "account_type": "credit",
+                "initial_balance": Decimal("1500.00"),
+            },
+        )
+        AccountCreditCardDetails.objects.get_or_create(
+            account=credit_card,
+            defaults={
+                "credit_limit": Decimal("8000.00"),
+                "statement_day": 5,
+                "payment_due_day": 20,
+            },
         )
 
         Tag.objects.get_or_create(user=user, name="recurrente", defaults={"color": "#6366f1"})
