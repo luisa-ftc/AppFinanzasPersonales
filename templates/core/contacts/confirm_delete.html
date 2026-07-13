@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Eliminar contacto · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>Eliminar contacto</h1>
+    <p>
+        ¿Estás seguro de que deseas eliminar a
+        <strong>{{ object.contact.get_full_name|default:object.contact.username }}</strong>
+        ({{ object.contact.email }}) de tus contactos?
+    </p>
+    <p class="help-text">
+        Esto solo elimina la relación entre ambos (dejarán de verse en sus listas
+        de contactos). No elimina la cuenta del usuario.
+    </p>
+    <form method="post">
+        {% csrf_token %}
+        <div class="form-actions">
+            <button type="submit" class="btn btn-danger">Eliminar</button>
+            <a href="{% url 'core:contact_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

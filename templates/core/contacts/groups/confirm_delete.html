@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Eliminar grupo · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>Eliminar grupo</h1>
+    <p>¿Estás seguro de que deseas eliminar el grupo <strong>{{ object.name }}</strong>?</p>
+    <p class="help-text">
+        Solo se elimina el grupo: tus contactos seguirán existiendo en tu lista
+        de contactos.
+    </p>
+    <form method="post">
+        {% csrf_token %}
+        <div class="form-actions">
+            <button type="submit" class="btn btn-danger">Eliminar</button>
+            <a href="{% url 'core:group_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

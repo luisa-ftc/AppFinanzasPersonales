@@ -9,6 +9,9 @@ from core.models import (
     Attachment,
     Budget,
     Category,
+    Contact,
+    ContactGroup,
+    ContactGroupMembership,
     Debt,
     Goal,
     Tag,
@@ -102,6 +105,25 @@ class GoalAdmin(admin.ModelAdmin):
     list_display = ("nombre", "user", "monto_requerido", "monto_abonado", "fecha_limite")
     list_filter = ("fecha_limite",)
     search_fields = ("nombre", "user__email")
+
+
+@admin.register(Contact)
+class ContactAdmin(admin.ModelAdmin):
+    list_display = ("user", "contact", "status", "created_at")
+    list_filter = ("status",)
+    search_fields = ("user__email", "contact__email")
+
+
+class ContactGroupMembershipInline(admin.TabularInline):
+    model = ContactGroupMembership
+    extra = 0
+
+
+@admin.register(ContactGroup)
+class ContactGroupAdmin(admin.ModelAdmin):
+    list_display = ("name", "user", "created_at")
+    search_fields = ("name", "user__email")
+    inlines = [ContactGroupMembershipInline]
 
 
 @admin.register(Attachment)

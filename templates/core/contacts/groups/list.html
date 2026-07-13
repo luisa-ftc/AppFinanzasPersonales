@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Grupos · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Grupos</h1>
+    <div>
+        <a href="{% url 'core:group_create' %}" class="btn btn-primary">Nuevo grupo</a>
+        <a href="{% url 'core:contact_list' %}" class="btn">Contactos</a>
+    </div>
+</div>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Nombre</th>
+            <th>Descripción</th>
+            <th class="text-right">Integrantes</th>
+            <th>Fecha de creación</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for group in groups %}
+        <tr>
+            <td><a href="{% url 'core:group_detail' group.pk %}">{{ group.name }}</a></td>
+            <td>{{ group.description|truncatechars:60|default:"—" }}</td>
+            <td class="text-right">{{ group.member_count }}</td>
+            <td>{{ group.created_at|date:"d/m/Y" }}</td>
+            <td class="actions">
+                <a href="{% url 'core:group_detail' group.pk %}">Ver</a>
+                <a href="{% url 'core:group_update' group.pk %}">Editar</a>
+                <a href="{% url 'core:group_delete' group.pk %}" class="text-danger">Eliminar</a>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">No hay grupos creados.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

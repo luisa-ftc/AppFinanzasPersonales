@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}{{ group.name }} · FinTrack{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ group.name }}</h1>
+    <div>
+        <a href="{% url 'core:group_update' group.pk %}" class="btn btn-primary">Editar</a>
+        <a href="{% url 'core:group_delete' group.pk %}" class="btn btn-danger">Eliminar</a>
+        <a href="{% url 'core:group_list' %}" class="btn">Volver</a>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+    <table class="table">
+        {% if group.description %}
+        <tr>
+            <th>Descripción</th>
+            <td>{{ group.description }}</td>
+        </tr>
+        {% endif %}
+        <tr>
+            <th>Integrantes</th>
+            <td>{{ members|length }}</td>
+        </tr>
+        <tr>
+            <th>Fecha de creación</th>
+            <td>{{ group.created_at|date:"d/m/Y" }}</td>
+        </tr>
+    </table>
+</div>
+
+<h2>Integrantes del grupo</h2>
+<table class="table">
+    <thead>
+        <tr>
+            <th>Nombre</th>
+            <th>Correo</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for member in members %}
+        <tr>
+            <td>{{ member.contact.get_full_name|default:member.contact.username }}</td>
+            <td>{{ member.contact.email }}</td>
+            <td class="actions">
+                <a href="{% url 'core:contact_detail' member.pk %}">Ver contacto</a>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="3">Este grupo no tiene integrantes.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

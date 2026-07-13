@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{% if object %}Editar{% else %}Nuevo{% endif %} grupo · FinTrack{% endblock %}
+
+{% block content %}
+<div class="card form-card">
+    <h1>{% if object %}Editar grupo{% else %}Nuevo grupo{% endif %}</h1>
+    <form method="post" novalidate>
+        {% csrf_token %}
+
+        {% if form.non_field_errors %}
+        <div style="background:#fee2e2; border:1px solid #fca5a5; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1rem; color:#991b1b;">
+            {% for error in form.non_field_errors %}
+            <p style="margin:0;">{{ error }}</p>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="form-field">
+            {{ form.name.label_tag }}
+            {{ form.name }}
+            {{ form.name.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.description.label_tag }}
+            {{ form.description }}
+            {{ form.description.errors }}
+        </div>
+
+        <div class="form-field">
+            {{ form.members.label_tag }}
+            {% if form.members.field.queryset %}
+            {{ form.members }}
+            {% else %}
+            <p class="help-text">
+                Aún no tienes contactos.
+                <a href="{% url 'core:contact_create' %}">Agrega un contacto</a>
+                para poder incluirlo en el grupo.
+            </p>
+            {% endif %}
+            {{ form.members.errors }}
+            <p class="help-text">{{ form.members.help_text }}</p>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Guardar</button>
+            <a href="{% url 'core:group_list' %}" class="btn">Cancelar</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

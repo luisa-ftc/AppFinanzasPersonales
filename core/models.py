@@ -523,6 +523,129 @@ class Goal(models.Model):
         )
 
 
+class Contact(models.Model):
+    """Relación de contacto entre dos usuarios registrados de FinTrack.
+
+    La relación es bidireccional y se modela con filas espejo: al agregar un
+    contacto, `core.services.contacts.add_contact` crea dos filas atómicamente
+    (user=A, contact=B) y (user=B, contact=A). Así la lista de cada usuario es
+    un simple `filter(user=...)` que reutiliza `UserOwnedMixin`/`UserOwnedViewSet`,
+    y cada fila guarda su propio `status` (preparado para estados asimétricos
+    futuros: solicitud enviada/recibida, bloqueado). Nunca crear/borrar filas
+    sueltas: usar siempre el servicio para no romper el espejo.
+    """
+
+    class ContactStatus(models.TextChoices):
+        CONTACTO = "contacto", "Contacto"
+        # Futuro: SOLICITUD_ENVIADA, SOLICITUD_RECIBIDA, BLOQUEADO
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="contacts",
+        verbose_name="usuario",
+    )
+    contact = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="contact_of",
+        verbose_name="contacto",
+    )
+    status = models.CharField(
+        "estado",
+        max_length=20,
+        choices=ContactStatus.choices,
+        default=ContactStatus.CONTACTO,
+    )
+    created_at = models.DateTimeField("fecha agregado", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "contacto"
+        verbose_name_plural = "contactos"
+        ordering = ["-created_at"]
+        unique_together = [["user", "contact"]]
+
+    def __str__(self):
+        return f"{self.user.email} -> {self.contact.email}"
+
+    def clean(self):
+        """Valida que un usuario no pueda agregarse a sí mismo como contacto."""
+        if self.user_id and self.contact_id and self.user_id == self.contact_id:
+            raise ValidationError("No puedes agregarte a ti mismo como contacto.")
+
+
+class ContactGroup(models.Model):
+    """Grupo de contactos de un usuario (familia, amigos, viaje, etc.).
+
+    Los integrantes son filas `Contact` del dueño del grupo (nunca usuarios
+    sueltos): así solo se puede agrupar a quien ya es contacto, y al eliminar
+    la relación de contacto la BD saca al integrante de todos los grupos por
+    CASCADE de la tabla intermedia, sin lógica adicional. El creador no se
+    agrega a sí mismo (no es contacto propio); los módulos que consuman
+    grupos (ej. Gastos Compartidos) deben tratarlo como dueño aparte.
+
+    La relación usa la tabla intermedia explícita `ContactGroupMembership`
+    para poder añadir campos por integrante a futuro (roles, invitaciones).
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="contact_groups",
+        verbose_name="usuario",
+    )
+    name = models.CharField("nombre", max_length=100)
+    description = models.TextField("descripción", blank=True)
+    members = models.ManyToManyField(
+        Contact,
+        through="ContactGroupMembership",
+        related_name="groups",
+        blank=True,
+        verbose_name="integrantes",
+    )
+    created_at = models.DateTimeField("fecha de creación", auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "grupo de contactos"
+        verbose_name_plural = "grupos de contactos"
+        ordering = ["name"]
+        unique_together = [["user", "name"]]
+
+    def __str__(self):
+        return self.name
+
+
+class ContactGroupMembership(models.Model):
+    """Pertenencia de un contacto a un grupo (tabla intermedia explícita).
+
+    Hoy solo registra la fecha; es el punto de extensión para futuros campos
+    por integrante (rol dentro del grupo, estado de invitación, etc.).
+    """
+
+    group = models.ForeignKey(
+        ContactGroup,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+        verbose_name="grupo",
+    )
+    contact = models.ForeignKey(
+        Contact,
+        on_delete=models.CASCADE,
+        related_name="group_memberships",
+        verbose_name="contacto",
+    )
+    created_at = models.DateTimeField("fecha agregado", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "integrante de grupo"
+        verbose_name_plural = "integrantes de grupo"
+        unique_together = [["group", "contact"]]
+
+    def __str__(self):
+        return f"{self.contact.contact.email} en {self.group.name}"
+
+
 def attachment_upload_path(instance, filename):
     """Ruta de almacenamiento de un adjunto, aislada por usuario y transacción."""
     return f"attachments/{instance.transaction.user_id}/{instance.transaction_id}/{filename}"

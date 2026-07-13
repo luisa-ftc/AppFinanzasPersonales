@@ -9,12 +9,15 @@ from core.models import (
     AccountCreditCardDetails,
     Budget,
     Category,
+    Contact,
+    ContactGroup,
     Debt,
     Goal,
     Tag,
     Transaction,
     User,
 )
+from core.services.contacts import add_contact
 
 
 class Command(BaseCommand):
@@ -179,5 +182,40 @@ class Command(BaseCommand):
                 "observaciones": "Meta completada",
             },
         )
+
+        # Usuarios extra para probar el módulo de Contactos (búsqueda y relación
+        # bidireccional). Idempotentes, misma contraseña que el usuario demo.
+        juan, juan_created = User.objects.get_or_create(
+            email="juan@fintrack.local",
+            defaults={
+                "username": "juan",
+                "first_name": "Juan",
+                "last_name": "Pérez",
+            },
+        )
+        if juan_created:
+            juan.set_password("demo1234")
+            juan.save()
+        maria, maria_created = User.objects.get_or_create(
+            email="maria@fintrack.local",
+            defaults={
+                "username": "maria",
+                "first_name": "María",
+                "last_name": "Gómez",
+            },
+        )
+        if maria_created:
+            maria.set_password("demo1234")
+            maria.save()
+        add_contact(user, juan)
+
+        # Grupo demo con el contacto Juan como integrante (add es idempotente).
+        grupo, _ = ContactGroup.objects.get_or_create(
+            user=user,
+            name="Viaje Cartagena",
+            defaults={"description": "Gastos del viaje a Cartagena"},
+        )
+        contacto_juan = Contact.objects.get(user=user, contact=juan)
+        grupo.members.add(contacto_juan)
 
         self.stdout.write(self.style.SUCCESS("Datos de demostración cargados correctamente."))
