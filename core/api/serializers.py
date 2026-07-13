@@ -10,8 +10,22 @@ asociar datos de otros usuarios.
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from core.models import Account, Attachment, Budget, Category, Tag, Transaction
+from core.models import (
+    Account,
+    AccountCreditCardDetails,
+    Attachment,
+    Budget,
+    Category,
+    Tag,
+    Transaction,
+)
 from core.services.accounts import calculate_account_balance
+from core.services.credit_cards import (
+    get_available_credit,
+    get_next_payment_due_date,
+    get_next_statement_date,
+    get_used_credit,
+)
 
 User = get_user_model()
 
@@ -51,10 +65,25 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
 
 
+class AccountCreditCardDetailsSerializer(serializers.ModelSerializer):
+    """Serializer de los campos específicos de una cuenta de tipo tarjeta de crédito."""
+
+    class Meta:
+        model = AccountCreditCardDetails
+        fields = ("credit_limit", "statement_day", "payment_due_day")
+
+
 class AccountSerializer(serializers.ModelSerializer):
-    """Serializer de cuentas; expone `balance` como campo calculado, no persistido."""
+    """Serializer de cuentas; expone `balance` como campo calculado, no persistido,
+    y para tarjetas de crédito anida sus detalles y expone crédito
+    usado/disponible y próximas fechas de corte/pago como campos calculados."""
 
     balance = serializers.SerializerMethodField()
+    credit_card_details = AccountCreditCardDetailsSerializer(required=False, allow_null=True)
+    used_credit = serializers.SerializerMethodField()
+    available_credit = serializers.SerializerMethodField()
+    next_statement_date = serializers.SerializerMethodField()
+    next_payment_due_date = serializers.SerializerMethodField()
 
     class Meta:
         model = Account
@@ -66,19 +95,80 @@ class AccountSerializer(serializers.ModelSerializer):
             "initial_balance",
             "is_active",
             "balance",
+            "credit_card_details",
+            "used_credit",
+            "available_credit",
+            "next_statement_date",
+            "next_payment_due_date",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_at", "updated_at", "balance")
+        read_only_fields = (
+            "id",
+            "created_at",
+            "updated_at",
+            "balance",
+            "used_credit",
+            "available_credit",
+            "next_statement_date",
+            "next_payment_due_date",
+        )
 
     def get_balance(self, obj):
         """Calcula el saldo actual de la cuenta (no es un valor almacenado en BD)."""
         return str(calculate_account_balance(obj))
 
+    def _get_details(self, obj):
+        return getattr(obj, "credit_card_details", None)
+
+    def get_used_credit(self, obj):
+        """Crédito utilizado, solo para cuentas de tipo tarjeta de crédito."""
+        if obj.account_type != Account.AccountType.CREDIT:
+            return None
+        return str(get_used_credit(obj))
+
+    def get_available_credit(self, obj):
+        """Crédito disponible, solo para cuentas de tipo tarjeta de crédito con detalle."""
+        details = self._get_details(obj)
+        if obj.account_type != Account.AccountType.CREDIT or not details:
+            return None
+        return str(get_available_credit(obj, details))
+
+    def get_next_statement_date(self, obj):
+        """Próxima fecha de corte, solo para cuentas de tipo tarjeta de crédito con detalle."""
+        details = self._get_details(obj)
+        if obj.account_type != Account.AccountType.CREDIT or not details:
+            return None
+        return get_next_statement_date(details)
+
+    def get_next_payment_due_date(self, obj):
+        """Próxima fecha límite de pago, solo para cuentas de tipo tarjeta de crédito con detalle."""
+        details = self._get_details(obj)
+        if obj.account_type != Account.AccountType.CREDIT or not details:
+            return None
+        return get_next_payment_due_date(details)
+
     def create(self, validated_data):
-        """Asocia la cuenta creada al usuario autenticado de la petición."""
+        """Asocia la cuenta creada al usuario autenticado y, si aplica, crea su detalle de tarjeta."""
+        details_data = validated_data.pop("credit_card_details", None)
         validated_data["user"] = self.context["request"].user
-        return super().create(validated_data)
+        account = super().create(validated_data)
+        if details_data and account.account_type == Account.AccountType.CREDIT:
+            AccountCreditCardDetails.objects.create(account=account, **details_data)
+        return account
+
+    def update(self, instance, validated_data):
+        """Actualiza la cuenta y su detalle de tarjeta: lo crea/actualiza si el tipo
+        es crédito, o lo elimina si el tipo cambió a uno sin detalle."""
+        details_data = validated_data.pop("credit_card_details", None)
+        account = super().update(instance, validated_data)
+        if account.account_type == Account.AccountType.CREDIT and details_data:
+            AccountCreditCardDetails.objects.update_or_create(
+                account=account, defaults=details_data
+            )
+        elif account.account_type != Account.AccountType.CREDIT:
+            AccountCreditCardDetails.objects.filter(account=account).delete()
+        return account
 
 
 class CategorySerializer(serializers.ModelSerializer):

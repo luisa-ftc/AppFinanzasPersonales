@@ -12,6 +12,7 @@ import json
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.views import LoginView, LogoutView, PasswordResetView
 from django.contrib.messages.views import SuccessMessageMixin
+from django.db import transaction as db_transaction
 from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -27,6 +28,7 @@ from django.views.generic import (
 )
 
 from core.forms import (
+    ACCOUNT_DETAIL_FORMS,
     AccountForm,
     AttachmentForm,
     BudgetForm,
@@ -37,8 +39,13 @@ from core.forms import (
     TransactionFilterForm,
     TransactionForm,
 )
-from core.models import Account, Attachment, Budget, Category, Transaction
+from core.models import Account, AccountCreditCardDetails, Attachment, Budget, Category, Transaction
 from core.services.accounts import calculate_account_balance, get_user_total_balance
+from core.services.credit_cards import (
+    get_available_credit,
+    get_next_payment_due_date,
+    get_next_statement_date,
+)
 from core.services.csv_io import export_transactions_csv, import_transactions_csv
 from core.services.reports import (
     generate_transactions_pdf,
@@ -141,22 +148,97 @@ class AccountListView(UserOwnedMixin, ListView):
     context_object_name = "accounts"
 
     def get_context_data(self, **kwargs):
-        """Añade el saldo calculado de cada cuenta al contexto de la lista."""
+        """Añade el saldo calculado y, para tarjetas de crédito, el detalle de cupo/fechas."""
         ctx = super().get_context_data(**kwargs)
         ctx["accounts_with_balances"] = []
         for a in ctx["accounts"]:
             balance = calculate_account_balance(a)
+            credit_info = None
+            details = getattr(a, "credit_card_details", None)
+            if a.account_type == Account.AccountType.CREDIT and details:
+                credit_info = {
+                    "credit_limit_display": format_money_display(details.credit_limit),
+                    "available_display": format_money_display(
+                        get_available_credit(a, details)
+                    ),
+                    "next_statement_date": get_next_statement_date(details),
+                    "next_due_date": get_next_payment_due_date(details),
+                }
             ctx["accounts_with_balances"].append(
                 {
                     "account": a,
                     "balance": balance,
                     "balance_display": format_money_display(balance),
+                    "credit_info": credit_info,
                 }
             )
         return ctx
 
 
-class AccountCreateView(UserOwnedMixin, SuccessMessageMixin, CreateView):
+class AccountFormMixin:
+    """Mixin compartido por `AccountCreateView`/`AccountUpdateView`: gestiona el
+    sub-formulario de detalles específico del tipo de cuenta elegido, usando el
+    registro `ACCOUNT_DETAIL_FORMS` (core/forms.py). Agregar un tipo de cuenta
+    futuro con sus propios campos no requiere tocar esta lógica, solo registrar
+    su ModelForm de detalles en `ACCOUNT_DETAIL_FORMS`.
+    """
+
+    def get_detail_instance(self, account_type):
+        """Devuelve la instancia de detalle existente para el tipo dado, o None."""
+        account = getattr(self, "object", None)
+        if not account:
+            return None
+        if account_type == Account.AccountType.CREDIT:
+            return getattr(account, "credit_card_details", None)
+        return None
+
+    def build_detail_forms(self, data=None):
+        """Instancia un formulario de detalle por cada tipo de cuenta registrado."""
+        forms_by_type = {}
+        for acc_type, form_cls in ACCOUNT_DETAIL_FORMS.items():
+            instance = self.get_detail_instance(acc_type)
+            forms_by_type[acc_type] = form_cls(data, instance=instance)
+        return forms_by_type
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        if "detail_forms" not in kwargs:
+            data = self.request.POST if self.request.method == "POST" else None
+            ctx["detail_forms"] = self.build_detail_forms(data)
+        return ctx
+
+    def form_valid(self, form):
+        """Asigna el usuario autenticado y guarda la cuenta junto con su
+        sub-formulario de detalles (si el tipo elegido tiene uno registrado),
+        todo dentro de la misma transacción atómica."""
+        form.instance.user = self.request.user
+        account_type = form.cleaned_data["account_type"]
+        detail_form_cls = ACCOUNT_DETAIL_FORMS.get(account_type)
+
+        detail_form = None
+        if detail_form_cls:
+            instance = self.get_detail_instance(account_type)
+            detail_form = detail_form_cls(self.request.POST, instance=instance)
+            if not detail_form.is_valid():
+                detail_forms = self.build_detail_forms(self.request.POST)
+                detail_forms[account_type] = detail_form
+                return self.render_to_response(
+                    self.get_context_data(form=form, detail_forms=detail_forms)
+                )
+
+        with db_transaction.atomic():
+            response = super().form_valid(form)
+            if detail_form:
+                detail_form.instance.account = self.object
+                detail_form.save()
+            else:
+                # El tipo elegido no tiene detalle propio (o cambió desde uno
+                # que sí lo tenía): limpiar cualquier fila huérfana.
+                AccountCreditCardDetails.objects.filter(account=self.object).delete()
+        return response
+
+
+class AccountCreateView(AccountFormMixin, UserOwnedMixin, SuccessMessageMixin, CreateView):
     """Alta de una nueva cuenta, asignada automáticamente al usuario autenticado."""
 
     model = Account
@@ -165,13 +247,8 @@ class AccountCreateView(UserOwnedMixin, SuccessMessageMixin, CreateView):
     success_url = reverse_lazy("core:account_list")
     success_message = "Cuenta creada correctamente."
 
-    def form_valid(self, form):
-        """Asigna el usuario autenticado como dueño de la cuenta antes de guardar."""
-        form.instance.user = self.request.user
-        return super().form_valid(form)
 
-
-class AccountUpdateView(UserOwnedMixin, SuccessMessageMixin, UpdateView):
+class AccountUpdateView(AccountFormMixin, UserOwnedMixin, SuccessMessageMixin, UpdateView):
     """Edición de una cuenta existente del usuario autenticado."""
 
     model = Account

@@ -13,7 +13,11 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
-from django.core.validators import FileExtensionValidator, MinValueValidator
+from django.core.validators import (
+    FileExtensionValidator,
+    MaxValueValidator,
+    MinValueValidator,
+)
 from django.db import models
 from django.utils import timezone
 
@@ -86,6 +90,53 @@ class Account(models.Model):
         from core.services.accounts import calculate_account_balance
 
         return calculate_account_balance(self)
+
+
+class AccountCreditCardDetails(models.Model):
+    """Datos específicos de una cuenta de tipo tarjeta de crédito.
+
+    Relación 1-a-1 con `Account`: solo existe para cuentas con
+    `account_type == Account.AccountType.CREDIT`. Este es el patrón a
+    replicar para futuros tipos de cuenta con campos propios (ej.
+    `AccountInvestmentDetails`): un modelo de detalle separado con
+    `OneToOneField` a `Account`, sin volver a modificar `Account`.
+    """
+
+    account = models.OneToOneField(
+        Account,
+        on_delete=models.CASCADE,
+        related_name="credit_card_details",
+        verbose_name="cuenta",
+    )
+    credit_limit = models.DecimalField(
+        "cupo",
+        max_digits=14,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    statement_day = models.PositiveSmallIntegerField(
+        "día de corte",
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
+    )
+    payment_due_day = models.PositiveSmallIntegerField(
+        "día límite de pago",
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
+    )
+
+    class Meta:
+        verbose_name = "detalle de tarjeta de crédito"
+        verbose_name_plural = "detalles de tarjeta de crédito"
+
+    def __str__(self):
+        return f"Detalles tarjeta de {self.account.name}"
+
+    def clean(self):
+        """Valida que el detalle solo exista sobre una cuenta de tipo tarjeta de crédito."""
+        if self.account_id and self.account.account_type != Account.AccountType.CREDIT:
+            raise ValidationError(
+                "Los detalles de tarjeta de crédito solo aplican a cuentas "
+                "de tipo 'Tarjeta de crédito'."
+            )
 
 
 class Category(models.Model):

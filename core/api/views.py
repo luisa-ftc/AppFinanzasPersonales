@@ -69,7 +69,7 @@ class UserOwnedViewSet(viewsets.ModelViewSet):
 class AccountViewSet(UserOwnedViewSet):
     """CRUD de cuentas del usuario autenticado."""
 
-    queryset = Account.objects.all()
+    queryset = Account.objects.select_related("credit_card_details")
     serializer_class = AccountSerializer
 
 
