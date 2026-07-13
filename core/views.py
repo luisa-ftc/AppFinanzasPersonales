@@ -8,13 +8,15 @@ peticiones HTTP y aíslan los datos por usuario autenticado.
 """
 
 import json
+from datetime import date
+from decimal import Decimal
 
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.views import LoginView, LogoutView, PasswordResetView
 from django.contrib.messages.views import SuccessMessageMixin
 from django.core.exceptions import ValidationError
 from django.db import transaction as db_transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
@@ -154,6 +156,40 @@ class DashboardView(LoginRequiredMixin, TemplateView):
                     "balance_display": format_money_display(balance),
                 }
             )
+
+        today = date.today()
+        active_budgets = list(
+            Budget.objects.filter(
+                user=user, period_start__lte=today, period_end__gte=today
+            ).select_related("category")
+        )
+        budget_amount = sum((budget.amount for budget in active_budgets), Decimal("0"))
+        budget_spent = sum((budget.spent for budget in active_budgets), Decimal("0"))
+        ctx["active_budget_count"] = len(active_budgets)
+        ctx["budget_amount_display"] = format_money_display(budget_amount)
+        ctx["budget_spent_display"] = format_money_display(budget_spent)
+        ctx["budget_percent_used"] = min(
+            int((budget_spent / budget_amount) * 100) if budget_amount else 0, 100
+        )
+
+        open_debts = list(
+            Debt.objects.filter(user=user).exclude(monto_pagado__gte=F("monto_requerido"))
+        )
+        debt_pending = sum((debt.monto_pendiente for debt in open_debts), Decimal("0"))
+        ctx["open_debt_count"] = len(open_debts)
+        ctx["debt_pending_display"] = format_money_display(debt_pending)
+
+        active_goals = list(
+            Goal.objects.filter(user=user).exclude(
+                monto_abonado__gte=F("monto_requerido")
+            )
+        )
+        ctx["active_goal_count"] = len(active_goals)
+        ctx["goal_average_progress"] = (
+            int(sum((goal.percent_abonado for goal in active_goals), Decimal("0")) / len(active_goals))
+            if active_goals
+            else 0
+        )
         ctx["monthly_chart"] = json.dumps(get_monthly_income_expense(user))
         ctx["category_chart"] = json.dumps(get_category_distribution(user))
         recent_transactions = list(Transaction.objects.filter(user=user)[:10])

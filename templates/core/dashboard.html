@@ -1,89 +1,150 @@
 {% extends "base.html" %}
+
 {% block title %}Dashboard · FinTrack{% endblock %}
 
 {% block content %}
-<div class="hero-card">
-    <div>
-        <p class="eyebrow">✨ Tu centro financiero</p>
-        <h1 style="margin-bottom: 0.5rem; font-size: 2rem;">Bienvenido a FinTrack</h1>
-        <p style="opacity: 0.92; max-width: 600px; line-height: 1.6;">Controla tus ingresos, gastos, presupuestos y metas desde una vista clara, elegante y poderosa.</p>
-    </div>
-    <div class="hero-actions">
-        <a href="{% url 'core:transaction_create' %}" class="btn btn-light">➕ Nueva transacción</a>
-        <a href="{% url 'core:account_list' %}" class="btn btn-outline">→ Ver cuentas</a>
-    </div>
-</div>
-
-<div class="stats-grid">
-    {% for b in balances_by_currency %}
-    <div class="stat-card stat-primary">
-        <span class="stat-label">Balance {{ b.currency }}</span>
-        <span class="stat-value">{{ b.balance_display }}</span>
-    </div>
-    {% endfor %}
-    {% for item in accounts %}
-    <div class="stat-card">
-        <span class="stat-label">{{ item.account.name }}</span>
-        <span style="font-size: 0.75rem; color: #94a3b8; margin-top: 0.1rem; display: block;">{{ item.account.get_account_type_display }} · {{ item.account.currency }}</span>
-        <span class="stat-value">{{ item.balance_display }}</span>
-    </div>
-    {% endfor %}
-</div>
-
-<div class="charts-grid">
-    <div class="card chart-card">
-        <div class="card-header">
-            <h2>Ingresos vs Gastos (6 meses)</h2>
-            <span class="chart-pill">Comparativa mensual</span>
-        </div>
-        <div class="chart-wrap">
-            <canvas id="monthlyChart"></canvas>
-        </div>
-    </div>
-    <div class="card chart-card">
-        <div class="card-header">
-            <h2>Distribución por categoría</h2>
-            <span class="chart-pill">Gastos</span>
-        </div>
-        <div class="chart-wrap chart-wrap-donut">
-            <canvas id="categoryChart"></canvas>
-        </div>
-    </div>
-</div>
-
-<div class="card">
-    <div class="card-header">
+<section class="finance-dashboard">
+    <div class="dashboard-heading">
         <div>
-            <h2>Transacciones recientes</h2>
-            <p style="color: #64748b; font-size: 0.9rem; margin-top: 0.25rem;">Últimas operaciones de tus cuentas</p>
+            <p class="dashboard-kicker">RESUMEN FINANCIERO</p>
+            <h1>Hola, {{ user.get_short_name|default:user.email }}</h1>
+            <p>Este es el estado de tus finanzas.</p>
         </div>
-        <a href="{% url 'core:transaction_list' %}" class="btn btn-primary btn-sm">Ver todas</a>
+        <a href="{% url 'core:transaction_create' %}" class="dashboard-add-button">+ Nueva transacción</a>
     </div>
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Fecha</th>
-                <th>Descripción</th>
-                <th>Cuenta</th>
-                <th>Tipo</th>
-                <th class="text-right">Monto</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for tx in recent_transactions %}
-            <tr>
-                <td><span style="color: #475569; font-weight: 500;">{{ tx.date|date:"d/m/Y" }}</span></td>
-                <td>{{ tx.description }}</td>
-                <td><span style="color: #64748b;">{{ tx.account.name }}</span></td>
-                <td><span class="badge badge-{{ tx.transaction_type }}">{{ tx.get_transaction_type_display }}</span></td>
-                <td class="text-right" style="font-weight: 600; color: {% if tx.transaction_type == 'income' %}#16a34a{% else %}#7f1d1d{% endif %};">${{ tx.amount_display }}</td>
-            </tr>
-            {% empty %}
-            <tr><td colspan="5" style="text-align: center; color: #94a3b8; padding: 2rem;">Sin transacciones registradas</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
+
+    <div class="dashboard-summary-grid">
+        <article class="dashboard-summary-card">
+            <div class="summary-card-top">
+                <span class="summary-icon summary-icon-amber">▤</span>
+                <details class="dashboard-menu">
+                    <summary aria-label="Acciones de presupuestos">⋮</summary>
+                    <div class="dashboard-menu-items">
+                        <a href="{% url 'core:budget_list' %}">Ver presupuestos</a>
+                        <a href="{% url 'core:budget_create' %}">Nuevo presupuesto</a>
+                    </div>
+                </details>
+            </div>
+            <p>Presupuestos actuales</p>
+            <strong>{{ budget_spent_display }} <small>de {{ budget_amount_display }}</small></strong>
+            <div class="summary-progress"><span style="width: {{ budget_percent_used }}%"></span></div>
+            <span class="summary-caption">{{ active_budget_count }} presupuesto{{ active_budget_count|pluralize:"s" }} activo{{ active_budget_count|pluralize:"s" }}</span>
+        </article>
+
+        <article class="dashboard-summary-card">
+            <div class="summary-card-top">
+                <span class="summary-icon summary-icon-coral">↓</span>
+                <details class="dashboard-menu">
+                    <summary aria-label="Acciones de deudas">⋮</summary>
+                    <div class="dashboard-menu-items">
+                        <a href="{% url 'core:debt_list' %}">Ver deudas</a>
+                        <a href="{% url 'core:debt_create' %}">Nueva deuda</a>
+                    </div>
+                </details>
+            </div>
+            <p>Deudas pendientes</p>
+            <strong>{{ debt_pending_display }}</strong>
+            <span class="summary-caption">{{ open_debt_count }} deuda{{ open_debt_count|pluralize:"s" }} por pagar</span>
+        </article>
+
+        <article class="dashboard-summary-card dashboard-goals-card">
+            <div class="summary-card-top">
+                <span class="summary-icon summary-icon-green">★</span>
+                <details class="dashboard-menu">
+                    <summary aria-label="Acciones de metas">⋮</summary>
+                    <div class="dashboard-menu-items">
+                        <a href="{% url 'core:goal_list' %}">Ver metas</a>
+                        <a href="{% url 'core:goal_create' %}">Nueva meta</a>
+                    </div>
+                </details>
+            </div>
+            <p>Avance de metas</p>
+            <strong>{{ goal_average_progress }}%</strong>
+            <div class="summary-progress summary-progress-green"><span style="width: {{ goal_average_progress }}%"></span></div>
+            <span class="summary-caption">{{ active_goal_count }} meta{{ active_goal_count|pluralize:"s" }} en progreso</span>
+        </article>
+    </div>
+
+    <div class="dashboard-main-grid">
+        <article class="dashboard-panel dashboard-accounts-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <h2>Mis cuentas</h2>
+                    <p>{{ accounts|length }} cuenta{{ accounts|length|pluralize:"s" }} activa{{ accounts|length|pluralize:"s" }}</p>
+                </div>
+                <details class="dashboard-menu">
+                    <summary aria-label="Acciones de cuentas">⋮</summary>
+                    <div class="dashboard-menu-items">
+                        <a href="{% url 'core:account_list' %}">Ver todas</a>
+                        <a href="{% url 'core:account_create' %}">Nueva cuenta</a>
+                    </div>
+                </details>
+            </div>
+
+            <div class="accounts-total">
+                {% if balances_by_currency %}
+                    {{ balances_by_currency.0.balance_display }}
+                {% else %}
+                    $0.00
+                {% endif %}
+                <span>Balance principal</span>
+            </div>
+
+            <div class="account-donut-wrap"><canvas id="categoryChart"></canvas></div>
+            <ul class="dashboard-account-list">
+                {% for item in accounts|slice:":4" %}
+                <li>
+                    <span class="account-avatar">{{ item.account.name|slice:":1"|upper }}</span>
+                    <span><b>{{ item.account.name }}</b><small>{{ item.account.get_account_type_display }} · {{ item.account.currency }}</small></span>
+                    <strong>{{ item.balance_display }}</strong>
+                </li>
+                {% empty %}
+                <li class="dashboard-empty">Aún no tienes cuentas registradas.</li>
+                {% endfor %}
+            </ul>
+        </article>
+
+        <article class="dashboard-panel dashboard-chart-panel">
+            <div class="dashboard-panel-heading">
+                <div>
+                    <h2>Flujo mensual</h2>
+                    <p>Ingresos y gastos de los últimos seis meses</p>
+                </div>
+                <span class="report-tag report-tag-purple">EN VIVO</span>
+            </div>
+            <div class="dashboard-chart-tabs" aria-label="Indicadores del gráfico">
+                <span><i class="chart-dot chart-dot-income"></i>Ingresos</span>
+                <span><i class="chart-dot chart-dot-expense"></i>Gastos</span>
+            </div>
+            <div class="dashboard-line-chart"><canvas id="monthlyChart"></canvas></div>
+        </article>
+
+        <article class="dashboard-panel dashboard-transactions-panel">
+            <div class="dashboard-panel-heading">
+                <div><h2>Transacciones</h2><p>Movimientos recientes</p></div>
+                <details class="dashboard-menu">
+                    <summary aria-label="Acciones de transacciones">⋮</summary>
+                    <div class="dashboard-menu-items">
+                        <a href="{% url 'core:transaction_list' %}">Ver todas</a>
+                        <a href="{% url 'core:transaction_create' %}">Nueva transacción</a>
+                    </div>
+                </details>
+            </div>
+            <ul class="dashboard-transaction-list">
+                {% for tx in recent_transactions|slice:":6" %}
+                <li>
+                    <span class="transaction-icon transaction-icon-{{ tx.transaction_type }}">{% if tx.transaction_type == 'income' %}↗{% elif tx.transaction_type == 'expense' %}↘{% else %}↔{% endif %}</span>
+                    <span class="transaction-copy"><b>{{ tx.description|default:"Sin descripción" }}</b><small>{{ tx.account.name }} · {{ tx.date|date:"d M" }}</small></span>
+                    <strong class="transaction-amount transaction-amount-{{ tx.transaction_type }}">{% if tx.transaction_type == 'income' %}+{% elif tx.transaction_type == 'expense' %}−{% endif %}{{ tx.amount_display }}</strong>
+                </li>
+                {% empty %}
+                <li class="dashboard-empty">Aún no hay transacciones.</li>
+                {% endfor %}
+            </ul>
+            <a href="{% url 'core:transaction_list' %}" class="dashboard-view-all">Ver todas las transacciones →</a>
+        </article>
+    </div>
+</section>
 {% endblock %}
 
 {% block extra_js %}
@@ -91,278 +152,28 @@
 const monthlyData = JSON.parse('{{ monthly_chart|escapejs }}');
 const categoryData = JSON.parse('{{ category_chart|escapejs }}');
 
-const monthlyCtx = document.getElementById('monthlyChart').getContext('2d');
-
-// Calcular el balance neto para cada mes
-const netBalance = monthlyData.income.map((income, idx) => income - monthlyData.expense[idx]);
-
-new Chart(monthlyCtx, {
-    type: 'bar',
-    data: {
-        labels: monthlyData.labels,
-        datasets: [
-            {
-                label: 'Ingresos',
-                data: monthlyData.income,
-                backgroundColor: '#22c55e',
-                borderRadius: 12,
-                borderSkipped: false,
-                maxBarThickness: 38,
-                barPercentage: 0.75,
-                order: 2,
-                hoverBackgroundColor: '#16a34a',
-                hoverBorderRadius: 12
-            },
-            {
-                label: 'Gastos',
-                data: monthlyData.expense,
-                backgroundColor: '#ef4444',
-                borderRadius: 12,
-                borderSkipped: false,
-                maxBarThickness: 38,
-                barPercentage: 0.75,
-                order: 2,
-                hoverBackgroundColor: '#dc2626',
-                hoverBorderRadius: 12
-            },
-            {
-                label: 'Balance neto',
-                data: netBalance,
-                type: 'line',
-                borderColor: '#8b5cf6',
-                backgroundColor: 'rgba(139, 92, 246, 0.1)',
-                borderWidth: 3,
-                pointRadius: 5,
-                pointBackgroundColor: '#8b5cf6',
-                pointBorderColor: '#ffffff',
-                pointBorderWidth: 2,
-                pointHoverRadius: 7,
-                tension: 0.4,
-                fill: false,
-                order: 1
-            }
-        ]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: {
-            mode: 'index',
-            intersect: false
+if (window.Chart) {
+    new Chart(document.getElementById('monthlyChart'), {
+        type: 'line',
+        data: {
+            labels: monthlyData.labels,
+            datasets: [
+                { label: 'Ingresos', data: monthlyData.income, borderColor: '#665cff', backgroundColor: 'rgba(102, 92, 255, .12)', fill: true, tension: .42, borderWidth: 3, pointRadius: 3, pointHoverRadius: 5 },
+                { label: 'Gastos', data: monthlyData.expense, borderColor: '#ff7a6b', backgroundColor: 'transparent', tension: .42, borderWidth: 3, pointRadius: 3, pointHoverRadius: 5 }
+            ]
         },
-        animation: {
-            duration: 800,
-            easing: 'easeInOutQuart',
-            delay: (ctx) => {
-                let delay = 0;
-                if (ctx.type === 'data') {
-                    delay = ctx.dataIndex * 50 + ctx.datasetIndex * 100;
-                }
-                return delay;
-            }
-        },
-        plugins: {
-            legend: {
-                position: 'top',
-                labels: {
-                    usePointStyle: true,
-                    padding: 20,
-                    font: { size: 13, weight: '600' },
-                    color: '#1e293b',
-                    generateLabels: (chart) => {
-                        const datasets = chart.data.datasets;
-                        return datasets.map((dataset, i) => ({
-                            text: dataset.label,
-                            fillStyle: dataset.borderColor || dataset.backgroundColor,
-                            pointStyle: 'circle',
-                            hidden: false,
-                            index: i
-                        }));
-                    }
-                }
-            },
-            tooltip: {
-                enabled: true,
-                backgroundColor: 'rgba(15, 23, 42, 0.9)',
-                padding: 14,
-                titleFont: { size: 14, weight: 'bold' },
-                bodyFont: { size: 12 },
-                borderColor: 'rgba(148, 163, 184, 0.2)',
-                borderWidth: 1,
-                displayColors: true,
-                usePointStyle: true,
-                callbacks: {
-                    label: function(context) {
-                        let label = context.dataset.label || '';
-                        if (label) label += ': ';
-                        if (context.parsed.y !== null) {
-                            label += '$' + context.parsed.y.toLocaleString('en-US', { 
-                                minimumFractionDigits: 2, 
-                                maximumFractionDigits: 2 
-                            });
-                        }
-                        return label;
-                    },
-                    afterLabel: function(context) {
-                        if (context.datasetIndex === 2) {
-                            const value = context.parsed.y;
-                            const percentage = value >= 0 ? '+' : '';
-                            return percentage + ((value / monthlyData.income[context.dataIndex]) * 100).toFixed(1) + '%';
-                        }
-                        return '';
-                    }
-                }
-            }
-        },
-        scales: {
-            y: {
-                beginAtZero: true,
-                grid: { 
-                    color: 'rgba(148, 163, 184, 0.15)',
-                    drawBorder: false,
-                    drawTicks: false
-                },
-                ticks: { 
-                    color: '#64748b',
-                    font: { size: 11 },
-                    callback: function(value) {
-                        return '$' + value.toLocaleString();
-                    }
-                }
-            },
-            x: {
-                grid: { display: false },
-                ticks: { 
-                    color: '#64748b',
-                    font: { size: 11 }
-                }
-            }
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: { backgroundColor: '#263348', padding: 12, callbacks: { label: context => `${context.dataset.label}: $${context.parsed.y.toLocaleString('en-US')}` } } },
+            scales: { y: { beginAtZero: true, border: { display: false }, grid: { color: '#edf0f7' }, ticks: { color: '#98a2b3', callback: value => `$${value}` } }, x: { border: { display: false }, grid: { display: false }, ticks: { color: '#98a2b3' } } }
         }
-    }
-});
+    });
 
-const totalCategoryAmount = categoryData.data.reduce((a, b) => a + b, 0);
-const categoryCtx = document.getElementById('categoryChart').getContext('2d');
-
-// Colores de respaldo bonitos
-const colorPalette = [
-    '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4',
-    '#0ea5e9', '#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e'
-];
-
-const categoryChart = new Chart(categoryCtx, {
-    type: 'doughnut',
-    data: {
-        labels: categoryData.labels,
-        datasets: [{
-            data: categoryData.data,
-            backgroundColor: categoryData.colors.length > 0 
-                ? categoryData.colors 
-                : colorPalette.slice(0, categoryData.data.length),
-            borderWidth: 3,
-            borderColor: '#ffffff',
-            hoverBorderWidth: 4,
-            hoverBorderColor: '#f0f9ff'
-        }]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        cutout: '68%',
-        animation: {
-            animateRotate: true,
-            animateScale: false,
-            duration: 800,
-            easing: 'easeInOutQuart'
-        },
-        plugins: {
-            legend: {
-                position: 'bottom',
-                labels: {
-                    padding: 20,
-                    usePointStyle: true,
-                    pointStyle: 'circle',
-                    font: { size: 12, family: '"Segoe UI", Tahoma, Geneva, sans-serif' },
-                    color: '#64748b',
-                    generateLabels: (chart) => {
-                        const data = chart.data;
-                        return data.labels.map((label, i) => ({
-                            text: label,
-                            fillStyle: data.datasets[0].backgroundColor[i],
-                            hidden: false,
-                            index: i,
-                            pointStyle: 'circle'
-                        }));
-                    }
-                }
-            },
-            tooltip: {
-                enabled: true,
-                backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                padding: 12,
-                titleFont: { size: 14, weight: 'bold' },
-                bodyFont: { size: 13 },
-                borderColor: 'rgba(255, 255, 255, 0.2)',
-                borderWidth: 1,
-                displayColors: true,
-                callbacks: {
-                    label: function(context) {
-                        const value = context.parsed;
-                        const percentage = ((value / totalCategoryAmount) * 100).toFixed(1);
-                        const formatted = '$' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                        return `${formatted} (${percentage}%)`;
-                    },
-                    afterLabel: function(context) {
-                        const value = context.parsed;
-                        const percentage = ((value / totalCategoryAmount) * 100).toFixed(1);
-                        return `${percentage}% del total`;
-                    }
-                }
-            },
-            datalabels: {
-                color: '#ffffff',
-                font: { weight: 'bold', size: 12 },
-                formatter: (value) => {
-                    const percentage = ((value / totalCategoryAmount) * 100).toFixed(0);
-                    return percentage + '%';
-                }
-            }
-        }
-    },
-    plugins: [{
-        id: 'textCenter',
-        beforeDatasetsDraw(chart) {
-            const { width, height, ctx } = chart;
-            ctx.restore();
-            
-            const fontSize = (height / 200).toFixed(2);
-            ctx.font = `bold ${fontSize}em sans-serif`;
-            ctx.textBaseline = 'middle';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = '#1e293b';
-            
-            const text = '$' + totalCategoryAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            ctx.fillText(text, width / 2, height / 2);
-            
-            ctx.font = `${fontSize * 0.6}em sans-serif`;
-            ctx.fillStyle = '#64748b';
-            ctx.fillText('Total gastos', width / 2, height / 2 + height / 12);
-            
-            ctx.save();
-        }
-    }]
-});
-
-// Redimensionar gráficos cuando cambia el tamaño de la ventana
-let resizeTimer;
-window.addEventListener('resize', () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
-        try {
-            monthlyCtx.canvas.parentElement.style.position = 'relative';
-            categoryCtx.canvas.parentElement.style.position = 'relative';
-        } catch(e) {}
-    }, 250);
-});
+    new Chart(document.getElementById('categoryChart'), {
+        type: 'doughnut',
+        data: { labels: categoryData.labels, datasets: [{ data: categoryData.data, backgroundColor: categoryData.colors.length ? categoryData.colors : ['#665cff', '#77d83d', '#ffbd3f', '#36c3e8', '#ff7a6b'], borderWidth: 4, borderColor: '#fff' }] },
+        options: { responsive: true, maintainAspectRatio: false, cutout: '72%', plugins: { legend: { display: false }, tooltip: { callbacks: { label: context => `${context.label}: $${context.parsed.toLocaleString('en-US')}` } } } }
+    });
+}
 </script>
 {% endblock %}
