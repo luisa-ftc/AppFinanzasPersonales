@@ -122,7 +122,7 @@ class CategoryForm(forms.ModelForm):
 
     class Meta:
         model = Category
-        fields = ("name", "category_type", "color", "icon", "parent", "is_active")
+        fields = ("name", "category_type", "color", "icon", "is_active")
 
 
 class BudgetForm(forms.ModelForm):
