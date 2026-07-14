@@ -105,6 +105,15 @@ h2 { font-size: 1.12rem; margin-bottom: 0.75rem; }
     gap: 1rem;
 }
 
+.section-subtitle {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #536071;
+    margin: 0 0 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 2px solid #e7ebf3;
+}
+
 .hero-card {
     background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
     color: white;

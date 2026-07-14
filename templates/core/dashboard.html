@@ -7,7 +7,7 @@
     <div class="dashboard-heading">
         <div>
             <p class="dashboard-kicker">RESUMEN FINANCIERO</p>
-            <h1>Hola, {{ user.get_short_name|default:user.email }}</h1>
+            <h1>Hola, {{ user.get_full_name|default:user.username }}</h1>
             <p>Este es el estado de tus finanzas.</p>
         </div>
         <a href="{% url 'core:transaction_create' %}" class="dashboard-add-button">+ Nueva transacción</a>
