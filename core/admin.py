@@ -54,8 +54,8 @@ class AccountCreditCardDetailsInline(admin.StackedInline):
 
 @admin.register(Account)
 class AccountAdmin(admin.ModelAdmin):
-    list_display = ("name", "user", "account_type", "currency", "is_active")
-    list_filter = ("account_type", "is_active", "currency")
+    list_display = ("name", "user", "account_type", "is_active")
+    list_filter = ("account_type", "is_active")
     search_fields = ("name", "user__email")
     inlines = [AccountCreditCardDetailsInline]
 

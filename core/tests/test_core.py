@@ -330,7 +330,7 @@ class TestAccountAPI:
         url = reverse("account-list")
         response = api_client.post(
             url,
-            {"name": "Ahorros", "account_type": "savings", "currency": "MXN"},
+            {"name": "Ahorros", "account_type": "savings"},
             format="json",
         )
         assert response.status_code == status.HTTP_201_CREATED
@@ -359,7 +359,6 @@ class TestAccountCreditCardAPI:
             {
                 "name": "Tarjeta Visa",
                 "account_type": "credit",
-                "currency": "COL",
                 "credit_card_details": {
                     "credit_limit": "5000.00",
                     "statement_day": 5,
@@ -500,7 +499,6 @@ class TestAccountCreditCardWebView:
             {
                 "account_type": "credit",
                 "name": "Tarjeta Web",
-                "currency": "COL",
                 "initial_balance": "0.00",
                 "is_active": "on",
                 "credit_limit": "4000.00",
@@ -519,7 +517,6 @@ class TestAccountCreditCardWebView:
             {
                 "account_type": "savings",
                 "name": "Ahorros Web",
-                "currency": "COL",
                 "initial_balance": "0.00",
                 "is_active": "on",
             },

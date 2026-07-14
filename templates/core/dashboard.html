@@ -98,11 +98,7 @@
             </div>
 
             <div class="accounts-total">
-                {% if balances_by_currency %}
-                    {{ balances_by_currency.0.balance_display }}
-                {% else %}
-                    $0.00
-                {% endif %}
+                {{ total_balance_display }}
                 <span>Balance principal</span>
             </div>
 
@@ -111,7 +107,7 @@
                 {% for item in accounts|slice:":4" %}
                 <li>
                     <span class="account-avatar">{{ item.account.name|slice:":1"|upper }}</span>
-                    <span><b>{{ item.account.name }}</b><small>{{ item.account.get_account_type_display }} · {{ item.account.currency }}</small></span>
+                    <span><b>{{ item.account.name }}</b><small>{{ item.account.get_account_type_display }}</small></span>
                     <strong>{{ item.balance_display }}</strong>
                 </li>
                 {% empty %}

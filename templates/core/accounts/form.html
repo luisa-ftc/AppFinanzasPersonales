@@ -28,12 +28,6 @@
         </div>
 
         <div class="form-field">
-            {{ form.currency.label_tag }}
-            {{ form.currency }}
-            {{ form.currency.errors }}
-        </div>
-
-        <div class="form-field">
             {{ form.initial_balance.label_tag }}
             {{ form.initial_balance }}
             {{ form.initial_balance.errors }}
@@ -75,20 +69,6 @@
     </form>
 </div>
 
-<datalist id="currency-datalist">
-    <option value="COP">COP - Peso colombiano</option>
-    <option value="USD">USD - Dólar estadounidense</option>
-    <option value="EUR">EUR - Euro</option>
-    <option value="GBP">GBP - Libra esterlina</option>
-    <option value="MXN">MXN - Peso mexicano</option>
-    <option value="BRL">BRL - Real brasileño</option>
-    <option value="CAD">CAD - Dólar canadiense</option>
-    <option value="JPY">JPY - Yen japonés</option>
-    <option value="CHF">CHF - Franco suizo</option>
-    <option value="ARS">ARS - Peso argentino</option>
-    <option value="PEN">PEN - Sol peruano</option>
-    <option value="CLP">CLP - Peso chileno</option>
-</datalist>
 {% endblock %}
 
 {% block extra_js %}

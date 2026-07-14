@@ -64,9 +64,8 @@ class AccountForm(forms.ModelForm):
 
     class Meta:
         model = Account
-        fields = ("name", "account_type", "currency", "initial_balance", "is_active")
+        fields = ("name", "account_type", "initial_balance", "is_active")
         widgets = {
-            "currency": forms.TextInput(attrs={"list": "currency-datalist", "placeholder": "COP"}),
             "initial_balance": forms.NumberInput(attrs={"step": "0.01"}),
         }
 

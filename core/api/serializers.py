@@ -123,6 +123,7 @@ class AccountSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
+            "currency",
             "created_at",
             "updated_at",
             "balance",
